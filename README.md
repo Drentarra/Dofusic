@@ -44,8 +44,6 @@ Il permet de réduire fortement la taille du dossier `Musiques` tout en gardant 
 
 Les autres formats restent compatibles, il n'est donc pas obligatoire de convertir vos musiques.
 
-Un script `CONVERTIR_EN_OPUS_64K.bat` est fourni avec Dofusic pour convertir facilement un dossier de musiques en Opus 64 kb/s sans supprimer les fichiers originaux.
-
 Les musiques peuvent également être lancées manuellement depuis Dofusic.
 
 ## Musiques génériques
@@ -93,6 +91,12 @@ Dofusic est portable.
 3. Lancez `Dofusic.exe`.
 4. Lancez Dofus.
 
+Après le téléchargement, vous pouvez vérifier l'intégrité de l'archive avec :
+
+```powershell
+Get-FileHash .\Dofusic.zip -Algorithm SHA256
+```
+
 Il n'y a rien à installer.
 
 Évitez simplement de déplacer ou supprimer les fichiers présents dans `Data`.
@@ -117,16 +121,6 @@ Les paramètres permettent notamment de modifier :
 - l'apparence de Dofusic.
 
 Les réglages sont conservés entre les lancements.
-
-## Convertir ses musiques en Opus
-
-Un script `CONVERTIR_EN_OPUS_64K.bat` est fourni pour ceux qui veulent réduire fortement la taille de leur dossier de musiques.
-
-Placez le BAT dans le dossier contenant vos morceaux et lancez-le.
-
-Il crée un nouveau dossier `Musiques` avec les morceaux convertis en **Opus 64 kb/s**.
-
-Les fichiers originaux ne sont pas supprimés.
 
 ## Pourquoi Opus 64 kb/s ?
 
