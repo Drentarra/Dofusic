@@ -1,0 +1,38 @@
+DOFUSIC V25.1 ECO - CONSTRUCTION PORTABLE WINDOWS X64
+============================================================
+
+1. Sur un PC Windows x64 avec Internet, lance BUILD_PORTABLE.bat.
+2. Le builder prépare un environnement isolé dans .portable-build.
+3. Il lance les tests, prépare l'OCR, construit Dofusic.exe et l'auto-teste.
+4. Le fichier à partager est :
+
+   Release\Dofusic_V25_1_ECO_WINDOWS_X64.zip
+
+UTILISATEUR FINAL
+-----------------
+Extraire le ZIP dans un dossier inscriptible puis lancer Dofusic.exe.
+Aucun Python système, pip, droit administrateur ou installateur Dofusic n'est requis.
+
+V25.1 ECO
+---------------
+- Mode développeur et mot de passe supprimés.
+- Session YouTube supprimée.
+- pywebview / WebView2 / pythonnet supprimés du runtime.
+- Recherche online légère via yt-dlp, suggestions HTTP et lecture file-backed.
+- Un seul modèle OCR zone PP-OCRv6 Small est embarqué pour le chemin live.
+- Profil ECO : capture 10 FPS, UI 12,5 Hz et OCR adaptatif (pas de relecture d une zone identique en boucle).
+- Visualiseur FFT désactivé par défaut ; il reste réactivable dans Paramètres.
+- Suggestions YouTube réparées via le flux JSON léger client=firefox&ds=yt.
+- Miniatures YouTube limitées au format mqdefault et téléchargées une par une.
+- Cache online neuf borné à 128 Mo par défaut ; cache miniatures réduit.
+- L'ancien Data\UserData\webview2 est supprimé automatiquement à la migration.
+
+Le mode OCR/local fonctionne hors ligne. Une connexion Internet n'est utilisée que
+quand la fonction Musique online est utilisée.
+
+
+AUDIO / STOCKAGE
+- Online : cache et ajout Musiques en Opus 64 kb/s.
+- Local : formats audio courants supplémentaires acceptés via FFmpeg en secours.
+- CONVERTIR_EN_OPUS_64K.bat : à poser à côté de vos musiques pour créer un dossier Musiques compressé en Opus 64 kb/s.
+- Les originaux ne sont jamais modifiés par le convertisseur.

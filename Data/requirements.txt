@@ -1,0 +1,29 @@
+# Dofusic V25.1 ECO runtime - portable Windows x64
+# RapidOCR est installe separement avec --no-deps dans BUILD_PORTABLE.bat
+# afin d'eviter que sa dependance opencv-python installe un second OpenCV.
+
+# OCR / inference
+onnxruntime==1.29.0
+numpy>=2.0,<3.0
+opencv-python-headless>=4.10,<5.0
+rapidfuzz>=3.14,<4.0
+mss>=10,<11
+pywin32>=311
+Pillow>=11,<13
+pygame==2.6.1
+
+# Dependances RapidOCR necessaires (RapidOCR lui-meme est installe --no-deps)
+pyclipper>=1.2.0
+Shapely>=1.7.1,!=2.0.4
+six>=1.15.0
+PyYAML>=6,<7
+tqdm>=4.66,<5
+omegaconf>=2.3,<3
+requests>=2.32,<3
+colorlog>=6,<7
+
+# Online music media retrieval
+# (aucune cle API Google necessaire)
+yt-dlp==2026.8.19
+yt-dlp-ejs==0.8.0
+imageio-ffmpeg>=0.6,<1
