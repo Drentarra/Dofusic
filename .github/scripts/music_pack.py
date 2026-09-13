@@ -17,7 +17,11 @@ import zipfile
 
 SOURCE_SHA256 = 'b282f7dabd465ba9d66ec78d9b1092e77dbb1c7082bf9c4f769784d7e6306c91'
 SOURCE_PREFIX = 'Dofusic/Musiques/'
-DOS_NAMES = {'CON', 'PRN', 'AUX', 'NUL', *(f'COM{i}' for i in range(1, 10)), *(f'LPT{i}' for i in range(1, 10))}
+DOS_NAMES = {
+    'CON', 'PRN', 'AUX', 'NUL',
+    *(f'{prefix}{suffix}' for prefix in ('COM', 'LPT')
+      for suffix in ('', *(str(i) for i in range(1, 10)), '\u00b9', '\u00b2', '\u00b3')),
+}
 
 
 def _safe_relative_path(name):

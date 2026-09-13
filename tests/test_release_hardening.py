@@ -48,6 +48,19 @@ def test_music_pack_metadata_pins_the_independent_release():
     assert re.fullmatch(r'[0-9a-f]{64}', metadata['sha256'])
 
 
+def test_music_pack_publishes_only_on_exact_tag_without_creating_it():
+    import json
+    import yaml
+    workflow = yaml.load((REPOSITORY_ROOT / '.github/workflows/publish-music-pack.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+    assert set(workflow['on']) == {'push'}
+    assert workflow['on']['push']['tags'] == ['music-v1']
+    serialized = json.dumps(workflow)
+    assert 'workflow_dispatch' not in serialized
+    publish = next(step for step in workflow['jobs']['music-pack']['steps'] if 'gh release create music-v1' in step.get('run', ''))
+    assert 'gh release create music-v1 --verify-tag' in publish['run']
+    assert '--target' not in publish['run']
+
+
 def _music_pack_module():
     import importlib.util
 
@@ -147,6 +160,7 @@ def test_music_pack_rejects_unsafe_paths_and_collisions_before_writing(tmp_path,
         [('Dofusic/Musiques/C:/outside.opus', b'bad')],
         [('Dofusic/Musiques//outside.opus', b'bad')],
         [('Dofusic/Musiques/CON.opus', b'bad')],
+        *[[('Dofusic/Musiques/' + alias + '.opus', b'bad')] for alias in ('COM', 'COM1', 'COM\u00b2', 'COM\u00b3', 'LPT', 'LPT1', 'LPT\u00b2', 'LPT\u00b3')],
         [('Dofusic/Musiques/a', b'file'), ('Dofusic/Musiques/a/track.opus', b'track')],
         [('Dofusic/Musiques/track.opus', b'1'), ('Dofusic/Musiques/TRACK.opus', b'2')],
     ]
@@ -274,8 +288,12 @@ def test_release_actions_permissions_triggers_and_artifacts_are_pinned():
     assert workflow['on']['push']['tags'] == ['v*']
     job = workflow['jobs']['build-windows']
     assert job['runs-on'] == 'windows-2025'
-    assert job['permissions'] == {'contents': 'write', 'id-token': 'write', 'attestations': 'write', 'actions': 'read'}
-    actions = {step['uses'].split('@')[0]: step for step in job['steps'] if 'uses' in step}
+    assert job['permissions'] == {'contents': 'read', 'actions': 'read'}
+    signer = workflow['jobs']['sign-windows']
+    assert signer['permissions'] == {'contents': 'read', 'actions': 'read'}
+    final = workflow['jobs']['release-windows']
+    assert final['permissions'] == {'contents': 'write', 'actions': 'read', 'id-token': 'write', 'attestations': 'write'}
+    actions = {step['uses'].split('@')[0]: step for step in job['steps'] + signer['steps'] + final['steps'] if 'uses' in step}
     for name, pin in {
         'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
         'actions/setup-python': '5fda3b95a4ea91299a34e894583c3862153e4b97',
@@ -287,7 +305,9 @@ def test_release_actions_permissions_triggers_and_artifacts_are_pinned():
     assert actions['actions/setup-python']['with']['python-version'] == '3.11.9'
     assert actions['actions/setup-python']['with']['architecture'] == 'x64'
     expected = {'Release/Dofusic.zip', 'Release/Dofusic.zip.sha256', 'Release/Dofusic.sbom.json', 'Release/BUILD_SIZE_REPORT.txt'}
-    assert set(actions['actions/upload-artifact']['with']['path'].splitlines()) == expected
+    assert set(actions['actions/upload-artifact']['with']['path'].splitlines()) >= {'Release/Dofusic.zip'}
+    assert any(set(step.get('with', {}).get('path', '').splitlines()) == expected for step in final['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
+    assert actions['actions/download-artifact']['uses'] == 'actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131'
     attest = actions['actions/attest']
     assert attest['if'] == "startsWith(github.ref, 'refs/tags/v')"
     assert attest['with']['subject-path'] == 'Release/Dofusic.zip'
@@ -295,9 +315,11 @@ def test_release_actions_permissions_triggers_and_artifacts_are_pinned():
 
 
 def test_release_scripts_fail_fast_and_gate_publication_on_verified_final_assets():
-    steps = _release_workflow()['jobs']['build-windows']['steps']
-    scripts = [step['run'] for step in steps if 'run' in step]
-    for step in steps:
+    workflow = _release_workflow()
+    build_steps = _release_workflow()['jobs']['build-windows']['steps']
+    steps = workflow['jobs']['release-windows']['steps']
+    scripts = [step['run'] for step in build_steps + steps if 'run' in step and step.get('if') != '${{ false }}']
+    for step in build_steps + steps:
         if 'run' in step:
             assert step['shell'] == 'pwsh'
             assert '$ErrorActionPreference = "Stop"' in step['run']
@@ -422,14 +444,26 @@ def test_verified_music_rejects_windows_extended_device_aliases_before_extractio
 
 
 def test_signpath_transport_is_tag_only_and_final_artifacts_follow_validation():
-    steps = _release_workflow()['jobs']['build-windows']['steps']
+    workflow = _release_workflow()
+    steps = workflow['jobs']['sign-windows']['steps']
+    assert workflow['jobs']['sign-windows']['permissions'] == {'contents': 'read', 'actions': 'read'}
+    assert workflow['jobs']['sign-windows']['outputs']['signed'] == "${{ steps.signpath-config.outputs.enabled }}"
+    assert workflow['jobs']['release-windows']['permissions']['contents'] == 'write'
+    assert workflow['jobs']['release-windows']['permissions']['id-token'] == 'write'
+    assert workflow['jobs']['release-windows']['permissions']['attestations'] == 'write'
+    final_steps = workflow['jobs']['release-windows']['steps']
+    signed_download = next(step for step in final_steps if step.get('name') == 'Download signed candidate')
+    signed_select = next(step for step in final_steps if step.get('name') == 'Select signed candidate')
+    assert signed_download['if'] == "needs.sign-windows.outputs.signed == 'true'"
+    assert signed_select['if'] == "needs.sign-windows.outputs.signed == 'true'"
+    assert all('refs/heads/__disabled__' in step.get('if', '') for step in workflow['jobs']['build-windows']['steps'] if step.get('uses', '').startswith('signpath/'))
     config = next(step for step in steps if step.get('id') == 'signpath-config')
     upload = next(step for step in steps if step.get('id') == 'signpath-upload')
     signing = next(step for step in steps if step.get('uses', '').startswith('signpath/'))
     validate = next(step for step in steps if 'verify_release.py signed' in step.get('run', ''))
-    tag_only = "startsWith(github.ref, 'refs/tags/v')"
-    assert config['if'] == tag_only
-    enabled_only = tag_only + " && steps.signpath-config.outputs.enabled == 'true'"
+    tag_only = "steps.signpath-config.outputs.enabled == 'true'"
+    assert workflow['jobs']['sign-windows']['if'] == "startsWith(github.ref, 'refs/tags/v')"
+    enabled_only = tag_only
     for step in (upload, signing, validate):
         assert step['if'] == enabled_only
         assert step.get('continue-on-error', 'false') == 'false'
@@ -445,26 +479,28 @@ def test_signpath_transport_is_tag_only_and_final_artifacts_follow_validation():
     assert signing['with']['github-token'] == '${{ github.token }}'
     for step in steps:
         if 'secrets.SIGNPATH' in str(step):
-            assert step['if'] in (tag_only, enabled_only)
+            assert step.get('if', workflow['jobs']['sign-windows']['if']) in (tag_only, enabled_only, "startsWith(github.ref, 'refs/tags/v')")
     script = validate['run']
     assert 'Get-AuthenticodeSignature' in script
     assert "$signature.Status -ne 'Valid'" in script
-    assert script.index('verify_release.py signed') < script.index('Get-AuthenticodeSignature') < script.index('Copy-Item')
+    assert script.index('verify_release.py signed') < script.index('Get-AuthenticodeSignature')
+    transfer = next(step for step in steps if step.get('name') == 'Transfer signed ZIP to final job')
+    assert steps.index(validate) < steps.index(transfer)
     assert '-PathType Leaf' in script
     assert 'Expand-Archive' not in script
-    validation_index = steps.index(validate)
-    final_index = next(i for i, step in enumerate(steps) if 'verify_release.py final' in step.get('run', ''))
-    sbom_index = next(i for i, step in enumerate(steps) if 'cyclonedx_py environment' in step.get('run', ''))
-    attest_index = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('actions/attest@'))
-    publish_index = next(i for i, step in enumerate(steps) if 'gh release create' in step.get('run', ''))
-    assert validation_index < final_index < sbom_index < attest_index < publish_index
+    final_steps = workflow['jobs']['release-windows']['steps']
+    final_index = next(i for i, step in enumerate(final_steps) if 'verify_release.py final' in step.get('run', ''))
+    sbom_index = next(i for i, step in enumerate(final_steps) if 'cyclonedx_py environment' in step.get('run', ''))
+    attest_index = next(i for i, step in enumerate(final_steps) if step.get('uses', '').startswith('actions/attest@'))
+    publish_index = next(i for i, step in enumerate(final_steps) if 'gh release create' in step.get('run', ''))
+    assert final_index < sbom_index < attest_index < publish_index
 
 
 def test_signpath_tag_configuration_fails_closed_using_synthetic_values(tmp_path):
     import os
     import subprocess
     import shutil
-    config = next(step for step in _release_workflow()['jobs']['build-windows']['steps'] if step.get('id') == 'signpath-config')
+    config = next(step for step in _release_workflow()['jobs']['sign-windows']['steps'] if step.get('id') == 'signpath-config')
     script = tmp_path / 'config.ps1'
     script.write_text(config['run'], encoding='utf-8')
     keys = ('SIGNPATH_API_TOKEN', 'SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG', 'SIGNPATH_ARTIFACT_CONFIGURATION_SLUG')

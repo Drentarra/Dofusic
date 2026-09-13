@@ -1,13 +1,9 @@
 ﻿name: Prepare independent music pack
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish:
-        description: 'Publish music-v1 (requires prior user approval)'
-        required: true
-        type: boolean
-        default: false
+  push:
+    tags:
+      - 'music-v1'
 
 permissions:
   contents: write
@@ -66,8 +62,7 @@ jobs:
           compression-level: 0
           retention-days: 30
 
-      - name: Publish immutable music-v1 only after approval
-        if: ${{ inputs.publish }}
+      - name: Publish immutable music-v1
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -79,7 +74,7 @@ jobs:
           if ($viewExit -eq 0) { throw 'music-v1 already exists; immutable release will not be overwritten' }
           $failure = Get-Content $errorFile -Raw
           if ($failure -notmatch 'HTTP 404') { throw "Cannot determine release absence: $failure" }
-          gh release create music-v1 music-pack/Dofusic-Musiques-v1.zip music-pack/Dofusic-Musiques-v1.zip.sha256 --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA --title 'Dofusic Musiques v1' --notes 'Independent immutable music pack from verified Dofusic v1.0.1.' --latest=false
+          gh release create music-v1 --verify-tag --repo $env:GITHUB_REPOSITORY --title 'Dofusic Musiques v1' --notes 'Independent immutable music pack from verified Dofusic v1.0.1.' --latest=false music-pack/Dofusic-Musiques-v1.zip music-pack/Dofusic-Musiques-v1.zip.sha256
           if ($LASTEXITCODE -ne 0) { throw 'Music release creation failed' }
           $publishedDir = Join-Path $env:RUNNER_TEMP 'published-music-pack'
           New-Item -ItemType Directory -Path $publishedDir | Out-Null
