@@ -166,3 +166,8 @@ Dofusic est un projet indépendant.
 Il n'est ni développé, ni approuvé, ni affilié à Ankama.
 
 Dofus et les éléments associés à Dofus appartiennent à leurs propriétaires respectifs.
+<img width="1896" height="692" alt="4" src="https://github.com/user-attachments/assets/30137adc-7de3-4af7-803d-bd43aaa2e442" />
+<img width="1350" height="594" alt="3" src="https://github.com/user-attachments/assets/ab23abeb-01ab-42d3-afc0-43bc2836e0c8" />
+<img width="1410" height="892" alt="2" src="https://github.com/user-attachments/assets/c007098e-f295-4e77-9e0c-792670179915" />
+<img width="1209" height="957" alt="1" src="https://github.com/user-attachments/assets/d669c7be-27a1-4ecc-83e3-10d5b5ea3b09" />
+
