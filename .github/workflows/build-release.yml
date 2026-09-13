@@ -17,6 +17,7 @@ jobs:
       contents: write
       id-token: write
       attestations: write
+      actions: read # SignPath reads job details and downloads the unsigned artifact.
 
     steps:
       - name: Checkout sources
@@ -79,7 +80,82 @@ jobs:
           if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Generated archive missing: $source" }
           Copy-Item -LiteralPath $source -Destination "Release/Dofusic.zip"
 
-      # Optional SignPath signing is inserted here, before final verification/hash.
+      - name: Validate official tag signing configuration
+        id: signpath-config
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+          SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          SIGNPATH_SIGNING_POLICY_SLUG: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          SIGNPATH_ARTIFACT_CONFIGURATION_SLUG: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          SIGNPATH_REQUIRED: ${{ vars.SIGNPATH_REQUIRED }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $required = $env:SIGNPATH_REQUIRED
+          if (-not [string]::IsNullOrEmpty($required) -and $required -cne 'true' -and $required -cne 'false') {
+            throw "SIGNPATH_REQUIRED must be exactly true or false (unset defaults to false)"
+          }
+          $configuration = @($env:SIGNPATH_API_TOKEN, $env:SIGNPATH_ORGANIZATION_ID, $env:SIGNPATH_PROJECT_SLUG, $env:SIGNPATH_SIGNING_POLICY_SLUG, $env:SIGNPATH_ARTIFACT_CONFIGURATION_SLUG)
+          $supplied = @($configuration | Where-Object { -not [string]::IsNullOrEmpty($_) }).Count
+          $missing = @($configuration | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count
+          if ($supplied -eq 0 -and $required -cne 'true') {
+            "enabled=false" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          } else {
+            if ($missing -gt 0) { throw "Official tag signing requires complete SignPath configuration" }
+            $signedDirectory = Join-Path $env:RUNNER_TEMP ("signpath-result-" + [guid]::NewGuid())
+            New-Item -ItemType Directory -Path $signedDirectory | Out-Null
+            "enabled=true" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            "signed-directory=$signedDirectory" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          }
+
+      - name: Upload exact unsigned ZIP for SignPath
+        id: signpath-upload
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signpath-config.outputs.enabled == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Dofusic-unsigned-signing-input
+          path: Release/Dofusic.zip
+          archive: false
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Sign official tag ZIP with SignPath
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signpath-config.outputs.enabled == 'true'
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_CONFIGURATION_SLUG }}
+          github-artifact-id: ${{ steps.signpath-upload.outputs.artifact-id }}
+          github-token: ${{ github.token }}
+          wait-for-completion: true
+          skip-decompress: true
+          output-artifact-directory: ${{ steps.signpath-config.outputs.signed-directory }}
+
+      - name: Validate signed ZIP preservation and Authenticode before replacement
+        if: startsWith(github.ref, 'refs/tags/v') && steps.signpath-config.outputs.enabled == 'true'
+        shell: pwsh
+        env:
+          SIGNED_DIRECTORY: ${{ steps.signpath-config.outputs.signed-directory }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $signedZip = Join-Path $env:SIGNED_DIRECTORY "Dofusic.zip"
+          if (-not (Test-Path -LiteralPath $signedZip -PathType Leaf)) { throw "Signed Dofusic.zip missing" }
+          $returned = @(Get-ChildItem -LiteralPath $env:SIGNED_DIRECTORY -Force)
+          if ($returned.Count -ne 1 -or $returned[0].Name -cne "Dofusic.zip") { throw "Unexpected signed result files" }
+          $extract = Join-Path $env:RUNNER_TEMP ("signpath-verified-" + [guid]::NewGuid())
+          python .github/scripts/verify_release.py signed Release/Dofusic.zip $signedZip $extract
+          $signedExe = Join-Path $extract "Dofusic/Dofusic.exe"
+          $signature = Get-AuthenticodeSignature -LiteralPath $signedExe
+          if ($signature.Status -ne 'Valid') { throw "Returned executable has no valid Authenticode signature" }
+          Copy-Item -LiteralPath $signedZip -Destination "Release/Dofusic.zip"
+
       - name: Verify final public ZIP and compute SHA256
         shell: pwsh
         run: |

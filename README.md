@@ -97,6 +97,16 @@ Après le téléchargement, vous pouvez vérifier l'intégrité de l'archive ave
 Get-FileHash .\Dofusic.zip -Algorithm SHA256
 ```
 
+Pour les releases officielles construites par GitHub Actions, les utilisateurs avancés peuvent vérifier la provenance du ZIP avec GitHub CLI :
+
+```powershell
+gh attestation verify Dofusic.zip --repo Drentarra/Dofusic
+```
+
+Cette provenance concerne les archives des releases officielles; une candidate compilée localement ne reçoit pas cette attestation.
+
+Les releases sont construites par GitHub Actions ; la signature Authenticode est appliquée dès que SignPath est activé ; SmartScreen peut néanmoins demander du temps pour construire la réputation de l’éditeur et du fichier. La [préparation SignPath](.signpath/README.md) décrit l’activation; elle ne signifie pas que la candidate locale est déjà signée.
+
 Il n'y a rien à installer.
 
 Évitez simplement de déplacer ou supprimer les fichiers présents dans `Data`.

@@ -1,4 +1,4 @@
-"""Build-only verification: music ZIP SHA/extraction, final ZIP/hash and SBOM pins."""
+"""Build-only verification: music ZIP SHA/extraction, signed ZIP preservation, final ZIP/hash and SBOM pins."""
 
 import argparse
 import hashlib
@@ -100,6 +100,37 @@ def finalize_release(source, checksum):
     return {'sha256': digest, 'file_count': len(files)}
 
 
+def validate_signed_release(unsigned_source, signed_source, destination):
+    """Validate both ZIPs, preserve all paths/non-EXE bytes, then extract only EXE.
+
+    The caller must check Authenticode on the extracted executable before replacing
+    the candidate with the returned original ZIP. No candidate bytes are written.
+    """
+    destination = Path(destination)
+    executable = 'Dofusic/Dofusic.exe'
+    with Path(unsigned_source).open('rb') as unsigned_stream, Path(signed_source).open('rb') as signed_stream:
+        with zipfile.ZipFile(unsigned_stream) as unsigned, zipfile.ZipFile(signed_stream) as signed:
+            unsigned_files = {item.orig_filename: item for item in _validated_entries(unsigned, 'final')}
+            signed_files = {item.orig_filename: item for item in _validated_entries(signed, 'final')}
+            if {item.orig_filename for item in unsigned.infolist()} != {item.orig_filename for item in signed.infolist()}:
+                raise ValueError('Signed ZIP changed archive paths')
+            for name, item in unsigned_files.items():
+                if name == executable:
+                    continue
+                returned = signed_files[name]
+                if item.file_size != returned.file_size:
+                    raise ValueError(f'Signed ZIP changed non-executable content: {name}')
+                with unsigned.open(item) as original, signed.open(returned) as incoming:
+                    if hashlib.file_digest(original, 'sha256').digest() != hashlib.file_digest(incoming, 'sha256').digest():
+                        raise ValueError(f'Signed ZIP changed non-executable content: {name}')
+            destination.mkdir(parents=True, exist_ok=False)
+            target = destination.joinpath(*executable.split('/'))
+            target.parent.mkdir(parents=True, exist_ok=False)
+            with signed.open(signed_files[executable]) as incoming, target.open('xb') as outgoing:
+                shutil.copyfileobj(incoming, outgoing, length=1024 * 1024)
+    return {'file_count': len(signed_files), 'executable': executable}
+
+
 def validate_sbom(source, lock):
     """Require CycloneDX 1.6, every installed lock pin and separate RapidOCR."""
     document = json.loads(Path(source).read_text(encoding='utf-8'))
@@ -136,6 +167,10 @@ def main():
     final = commands.add_parser('final')
     final.add_argument('source', type=Path)
     final.add_argument('checksum', type=Path)
+    signed = commands.add_parser('signed')
+    signed.add_argument('unsigned_source', type=Path)
+    signed.add_argument('signed_source', type=Path)
+    signed.add_argument('destination', type=Path)
     sbom = commands.add_parser('sbom')
     sbom.add_argument('source', type=Path)
     sbom.add_argument('lock', type=Path)
@@ -144,6 +179,8 @@ def main():
         result = extract_music(args.source, args.sha256, args.destination)
     elif args.command == 'final':
         result = finalize_release(args.source, args.checksum)
+    elif args.command == 'signed':
+        result = validate_signed_release(args.unsigned_source, args.signed_source, args.destination)
     else:
         result = validate_sbom(args.source, args.lock)
     print(json.dumps(result, sort_keys=True))

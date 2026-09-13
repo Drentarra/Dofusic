@@ -274,7 +274,7 @@ def test_release_actions_permissions_triggers_and_artifacts_are_pinned():
     assert workflow['on']['push']['tags'] == ['v*']
     job = workflow['jobs']['build-windows']
     assert job['runs-on'] == 'windows-2025'
-    assert job['permissions'] == {'contents': 'write', 'id-token': 'write', 'attestations': 'write'}
+    assert job['permissions'] == {'contents': 'write', 'id-token': 'write', 'attestations': 'write', 'actions': 'read'}
     actions = {step['uses'].split('@')[0]: step for step in job['steps'] if 'uses' in step}
     for name, pin in {
         'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
@@ -418,3 +418,145 @@ def test_verified_music_rejects_windows_extended_device_aliases_before_extractio
         with pytest.raises(ValueError):
             verifier.extract_music(source, hashlib.sha256(source.read_bytes()).hexdigest(), destination)
         assert not destination.exists()
+
+
+
+def test_signpath_transport_is_tag_only_and_final_artifacts_follow_validation():
+    steps = _release_workflow()['jobs']['build-windows']['steps']
+    config = next(step for step in steps if step.get('id') == 'signpath-config')
+    upload = next(step for step in steps if step.get('id') == 'signpath-upload')
+    signing = next(step for step in steps if step.get('uses', '').startswith('signpath/'))
+    validate = next(step for step in steps if 'verify_release.py signed' in step.get('run', ''))
+    tag_only = "startsWith(github.ref, 'refs/tags/v')"
+    assert config['if'] == tag_only
+    enabled_only = tag_only + " && steps.signpath-config.outputs.enabled == 'true'"
+    for step in (upload, signing, validate):
+        assert step['if'] == enabled_only
+        assert step.get('continue-on-error', 'false') == 'false'
+    assert upload['uses'] == 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a'
+    assert upload['with']['path'] == 'Release/Dofusic.zip'
+    assert upload['with']['archive'] == 'false'
+    assert upload['with']['if-no-files-found'] == 'error'
+    assert signing['uses'] == 'signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627'
+    assert signing['with']['github-artifact-id'] == '${{ steps.signpath-upload.outputs.artifact-id }}'
+    assert signing['with']['wait-for-completion'] == 'true'
+    assert signing['with']['skip-decompress'] == 'true'
+    assert signing['with']['output-artifact-directory'] == '${{ steps.signpath-config.outputs.signed-directory }}'
+    assert signing['with']['github-token'] == '${{ github.token }}'
+    for step in steps:
+        if 'secrets.SIGNPATH' in str(step):
+            assert step['if'] in (tag_only, enabled_only)
+    script = validate['run']
+    assert 'Get-AuthenticodeSignature' in script
+    assert "$signature.Status -ne 'Valid'" in script
+    assert script.index('verify_release.py signed') < script.index('Get-AuthenticodeSignature') < script.index('Copy-Item')
+    assert '-PathType Leaf' in script
+    assert 'Expand-Archive' not in script
+    validation_index = steps.index(validate)
+    final_index = next(i for i, step in enumerate(steps) if 'verify_release.py final' in step.get('run', ''))
+    sbom_index = next(i for i, step in enumerate(steps) if 'cyclonedx_py environment' in step.get('run', ''))
+    attest_index = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('actions/attest@'))
+    publish_index = next(i for i, step in enumerate(steps) if 'gh release create' in step.get('run', ''))
+    assert validation_index < final_index < sbom_index < attest_index < publish_index
+
+
+def test_signpath_tag_configuration_fails_closed_using_synthetic_values(tmp_path):
+    import os
+    import subprocess
+    import shutil
+    config = next(step for step in _release_workflow()['jobs']['build-windows']['steps'] if step.get('id') == 'signpath-config')
+    script = tmp_path / 'config.ps1'
+    script.write_text(config['run'], encoding='utf-8')
+    keys = ('SIGNPATH_API_TOKEN', 'SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_PROJECT_SLUG', 'SIGNPATH_SIGNING_POLICY_SLUG', 'SIGNPATH_ARTIFACT_CONFIGURATION_SLUG')
+    complete = {key: 'synthetic-test-value' for key in keys}
+    fixtures = [({}, '', 0, 'false'), ({}, 'false', 0, 'false'), ({}, 'true', 1, None), ({}, 'invalid', 1, None), ({}, 'TRUE', 1, None), ({}, ' false ', 1, None), (complete, 'false', 0, 'true'), (complete, 'true', 0, 'true'), (complete, '', 0, 'true')]
+    fixtures += [({key: value for key, value in complete.items() if key != missing}, 'false', 1, None) for missing in keys]
+    fixtures += [({'SIGNPATH_API_TOKEN': ' '}, 'false', 1, None)]
+    for index, (values, required, failed, enabled) in enumerate(fixtures):
+        output = tmp_path / f'outputs-{index}'
+        runner_temp = tmp_path / f'runner-{index}'
+        runner_temp.mkdir()
+        # Explicit allowlist: never inherit or inspect any SignPath environment values.
+        env = {key: os.environ[key] for key in ('PATH', 'SystemRoot', 'TEMP', 'TMP') if key in os.environ}
+        env.update({key: '' for key in keys})
+        env.update(values)
+        env.update(SIGNPATH_REQUIRED=required, GITHUB_OUTPUT=str(output), RUNNER_TEMP=str(runner_temp))
+        result = subprocess.run([shutil.which('pwsh') or 'powershell', '-NoProfile', '-NonInteractive', '-File', str(script)], env=env, capture_output=True, text=True)
+        assert bool(result.returncode) == bool(failed), (required, sorted(values), result.stdout, result.stderr)
+        if enabled is not None:
+            assert f'enabled={enabled}' in output.read_text(encoding='utf-8-sig')
+            if enabled == 'true':
+                lines = output.read_text(encoding='utf-8-sig').splitlines()
+                directory = Path(next(line.split('=', 1)[1] for line in lines if line.startswith('signed-directory=')))
+                assert directory.is_dir() and not list(directory.iterdir())
+        else:
+            assert not output.exists()
+
+
+def _signed_zip(tmp_path, filename, entries):
+    source = _music_source(tmp_path, entries)
+    target = tmp_path / filename
+    source.replace(target)
+    return target
+
+
+def test_signed_archive_allows_changed_executable_preserves_data_music_and_candidate(tmp_path):
+    verifier = _release_verifier()
+    unchanged = [('Dofusic/Data/runtime.bin', b'data'), ('Dofusic/Musiques/track.opus', b'music')]
+    candidate = _signed_zip(tmp_path, 'unsigned.zip', [('Dofusic/Dofusic.exe', b'unsigned'), *unchanged])
+    signed = _signed_zip(tmp_path, 'signed.zip', [('Dofusic/Dofusic.exe', b'signed executable'), *reversed(unchanged)])
+    original = candidate.read_bytes()
+    extract = tmp_path / 'extract'
+    verifier.validate_signed_release(candidate, signed, extract)
+    assert candidate.read_bytes() == original
+    assert (extract / 'Dofusic/Dofusic.exe').read_bytes() == b'signed executable'
+    assert sorted(path.relative_to(extract).as_posix() for path in extract.rglob('*') if path.is_file()) == ['Dofusic/Dofusic.exe']
+
+
+def test_signed_archive_rejects_changed_removed_added_or_unsafe_content_before_extraction(tmp_path):
+    import pytest
+    verifier = _release_verifier()
+    valid = [('Dofusic/Dofusic.exe', b'exe'), ('Dofusic/Data/a', b'data'), ('Dofusic/Musiques/a', b'music')]
+    candidate = _signed_zip(tmp_path, 'unsigned.zip', valid)
+    fixtures = [valid[1:], valid[:2], [valid[0], valid[2]], [(valid[0][0], b''), *valid[1:]], [valid[0], (valid[1][0], b'changed'), valid[2]], [*valid[:2], (valid[2][0], b'changed')], [*valid, ('Dofusic/Data/added', b'new')], [valid[0], ('Dofusic/Data/renamed', b'data'), valid[2]], [*valid, ('Other/file', b'bad')], [*valid, ('Dofusic/Data/../outside', b'bad')], [*valid, ('Dofusic/Data/a\\outside', b'bad')], [*valid, ('Dofusic/Data/A', b'bad')], [*valid, valid[1]], [*valid, ('Dofusic/Data/a/child', b'bad')]]
+    fixtures += [[*valid, ('Dofusic/Data/' + prefix + digit + '.bin', b'bad')] for prefix in ('COM', 'LPT') for digit in ('\u00b9', '\u00b2', '\u00b3')]
+    original = candidate.read_bytes()
+    for index, entries in enumerate(fixtures):
+        signed = _signed_zip(tmp_path, f'signed-{index}.zip', entries)
+        extract = tmp_path / f'extract-{index}'
+        with pytest.raises(ValueError):
+            verifier.validate_signed_release(candidate, signed, extract)
+        assert not extract.exists()
+        assert candidate.read_bytes() == original
+
+
+def test_signed_archive_rejects_missing_corrupt_nonregular_and_existing_destination(tmp_path):
+    import pytest
+    import stat
+    import zipfile
+    verifier = _release_verifier()
+    valid = [('Dofusic/Dofusic.exe', b'exe'), ('Dofusic/Data/a', b'data'), ('Dofusic/Musiques/a', b'music')]
+    candidate = _signed_zip(tmp_path, 'unsigned.zip', valid)
+    extract = tmp_path / 'extract'
+    with pytest.raises(FileNotFoundError):
+        verifier.validate_signed_release(candidate, tmp_path / 'missing.zip', extract)
+    signed = tmp_path / 'signed.zip'
+    signed.write_bytes(b'not a zip')
+    with pytest.raises(zipfile.BadZipFile):
+        verifier.validate_signed_release(candidate, signed, extract)
+    with zipfile.ZipFile(signed, 'w') as archive:
+        for name, content in valid:
+            item = zipfile.ZipInfo(name)
+            item.create_system = 3
+            item.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(item, content)
+    with pytest.raises(ValueError):
+        verifier.validate_signed_release(candidate, signed, extract)
+    assert not extract.exists()
+    signed = _signed_zip(tmp_path, 'signed.zip', valid)
+    extract.mkdir()
+    sentinel = extract / 'sentinel'
+    sentinel.write_bytes(b'existing')
+    with pytest.raises(FileExistsError):
+        verifier.validate_signed_release(candidate, signed, extract)
+    assert sentinel.read_bytes() == b'existing'
