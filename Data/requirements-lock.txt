@@ -2,7 +2,7 @@
 # RapidOCR is installed separately with --no-deps by BUILD_PORTABLE.bat.
 onnxruntime==1.29.0
 numpy==2.4.6
-opencv-python-headless==4.14.0.94
+opencv-python-headless==5.0.0.93
 rapidfuzz==3.14.6
 mss==10.2.0
 pywin32==312
