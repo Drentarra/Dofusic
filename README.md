@@ -1,5 +1,7 @@
 # Dofusic 🎵
 
+[**Télécharger la dernière version**](https://github.com/Drentarra/Dofusic/releases/latest)
+
 Dofusic change automatiquement la musique de Dofus selon la zone où vous êtes et si vous êtes en combat.
 
 À la base je l'ai fait parce que j'avais envie de pouvoir remplacer les musiques du jeu facilement, tout en gardant des changements automatiques quand je me déplace ou que je lance un combat.
