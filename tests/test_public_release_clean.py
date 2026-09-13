@@ -35,11 +35,11 @@ def test_public_repository_contains_no_internal_signpath_or_music_pack_scaffoldi
         assert not path.exists(), f'Public repository should not contain {path.relative_to(ROOT)}'
 
 
-def test_public_music_folder_contains_no_distributed_tracks():
+def test_public_music_folder_contains_bundled_tracks():
     music = ROOT / 'Musiques'
     assert music.is_dir()
-    files = sorted(path.relative_to(music).as_posix() for path in music.rglob('*') if path.is_file())
-    assert files == ['README.txt']
+    tracks = sorted(music.rglob('*.opus'))
+    assert len(tracks) == 163
 
 
 def test_ci_runs_only_on_main_and_pull_requests():
@@ -92,4 +92,5 @@ def test_readme_has_no_signpath_or_obsolete_checksum_companion_instructions():
     assert 'signpath' not in readme
     assert 'dofusic.zip.sha256' not in readme
     assert 'get-filehash' not in readme
-    assert 'dossier `musiques`' in readme
+    assert 'contient directement les musiques utilisées par dofusic' in readme
+

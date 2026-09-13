@@ -16,9 +16,9 @@ Aucun Python système, pip, droit administrateur ou installateur Dofusic n'est r
 Le ZIP contient :
 - Dofusic.exe
 - Data\
-- Musiques\ (sans morceaux distribués avec le programme)
+- Musiques\ (musiques incluses)
 
-Ajoutez vos propres musiques dans le dossier Musiques.
+Vous pouvez ajouter ou remplacer les musiques dans le dossier Musiques.
 
 V25.1 ECO
 ---------

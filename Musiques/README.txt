@@ -1,3 +1,3 @@
-Ajoutez ici vos propres musiques pour Dofusic.
+Les musiques utilisées par Dofusic sont incluses dans ce dossier.
 
-Le téléchargement officiel ne contient aucun morceau musical.
+Vous pouvez ajouter ou remplacer des morceaux librement.

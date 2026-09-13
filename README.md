@@ -22,9 +22,9 @@ Si Dofus n'est pas ouvert, la détection automatique reste désactivée.
 
 ## Musiques personnelles
 
-Le téléchargement officiel contient un dossier `Musiques` sans morceaux distribués avec le programme.
+Le téléchargement officiel contient directement les musiques utilisées par Dofusic.
 
-Ajoutez simplement vos propres fichiers dans ce dossier.
+Vous pouvez aussi ajouter ou remplacer des morceaux dans ce dossier.
 
 Formats pris en charge notamment :
 
