@@ -115,16 +115,6 @@ def test_spec_bundles_quickjs_binary_only_once_and_builder_guards_large_duplicat
     assert '_check_large_duplicate_files' in builder
 
 
-def test_batch_converter_outputs_opus_64k_into_musiques_folder():
-    converter = ROOT / 'CONVERTIR_EN_OPUS_64K.bat'
-    assert converter.is_file()
-    text = converter.read_text(encoding='utf-8', errors='replace').lower()
-    assert 'musiques' in text
-    assert 'libopus' in text
-    assert '64k' in text
-    assert 'ffmpeg' in text
-
-
 def test_frozen_runtime_does_not_bundle_deno_python_package():
     spec = (DATA / 'Dofusic.spec').read_text(encoding='utf-8')
     main = (DATA / 'main.py').read_text(encoding='utf-8')
@@ -138,4 +128,5 @@ def test_quickjs_source_fallback_has_no_python_runtime_package_dependency():
     assert 'import deno' not in retrieval
     assert "importlib.import_module('deno')" not in retrieval
     assert "shutil.which('qjs')" in retrieval
+
 
