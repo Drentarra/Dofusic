@@ -4,120 +4,66 @@
 
 Dofusic change automatiquement la musique de Dofus selon la zone où vous êtes et si vous êtes en combat.
 
-À la base je l'ai fait parce que j'avais envie de pouvoir remplacer les musiques du jeu facilement, tout en gardant des changements automatiques quand je me déplace ou que je lance un combat.
-
-Il est aussi possible d'écouter ses propres musiques manuellement ou d'en chercher directement en ligne.
+Je l'ai fait pour pouvoir remplacer facilement les musiques du jeu tout en gardant des changements automatiques quand je me déplace ou que je lance un combat.
 
 ## Fonctionnement
 
-**Désactiver au préalable les musiques de Dofus**
+**Désactivez les musiques de Dofus avant d'utiliser Dofusic.**
 
-Dofusic détecte la position et la zone affichées dans Dofus.
-
-À partir de ça, il peut automatiquement :
+Dofusic lit la position et la zone affichées dans le jeu pour pouvoir :
 
 - changer de musique selon la zone ;
-- détecter le passage en combat ;
+- détecter les combats ;
 - lancer une musique de combat ;
-- revenir à la musique de la zone à la fin du combat ;
-- utiliser des musiques génériques lorsqu'aucune musique particulière n'est associée à la zone.
-
-Tout se fait automatiquement une fois Dofus lancé.
+- reprendre la musique de zone après le combat ;
+- utiliser des musiques génériques quand aucune musique particulière n'est prévue.
 
 Si Dofus n'est pas ouvert, la détection automatique reste désactivée.
 
 ## Musiques personnelles
 
-Vous pouvez mettre vos propres morceaux dans le dossier `Musiques`.
+Le téléchargement officiel contient un dossier `Musiques` sans morceaux distribués avec le programme.
 
-Dofusic accepte notamment :
+Ajoutez simplement vos propres fichiers dans ce dossier.
+
+Formats pris en charge notamment :
 
 `OPUS` `MP3` `OGG` `FLAC` `WAV` `M4A` `AAC` `WMA` `WEBM` `MKA` `AIFF` `AC3`
 
-et plusieurs autres formats pris en charge par FFmpeg.
+Le format conseillé est **Opus 64 kb/s** pour garder une bonne qualité avec des fichiers légers.
 
-### Format conseillé : Opus
-
-**Le format recommandé pour Dofusic est l'Opus (`.opus`), idéalement en 64 kb/s.**
-
-Il permet de réduire fortement la taille du dossier `Musiques` tout en gardant une qualité largement suffisante pour une écoute en jeu.
-
-Les autres formats restent compatibles, il n'est donc pas obligatoire de convertir vos musiques.
-
-Les musiques peuvent également être lancées manuellement depuis Dofusic.
-
-## Musiques génériques
-
-Les fichiers nommés :
-
-`Musique.opus`  
-`Musique1.opus`  
-`Musique2.opus`  
-`Musique3.opus`
-
-etc. servent de musiques génériques.
-
-Dofusic en choisit une aléatoirement lorsqu'il n'y a pas de musique particulière prévue pour la zone.
-
-Le même principe est utilisé pour les musiques de combat.
+Les fichiers nommés `Musique.opus`, `Musique1.opus`, `Musique2.opus`, etc. servent de musiques génériques.
 
 ## Musique en ligne
 
 L'onglet Online permet de rechercher et d'écouter une musique directement depuis Dofusic.
 
-Les morceaux téléchargés par Dofusic sont enregistrés en **Opus 64 kb/s** afin de limiter leur poids.
-
-Après une écoute manuelle, Dofusic peut reprendre automatiquement la musique liée au jeu.
-
-## Changements de musique
-
-Les changements ne sont pas faits brutalement.
-
-Dofusic utilise des fondus entre les morceaux, y compris pour :
-
-- les changements de zone ;
-- les combats ;
-- les musiques locales ;
-- les musiques lancées depuis l'onglet Online.
-
-La durée du fondu peut être réglée dans les paramètres.
+Les morceaux téléchargés par Dofusic sont enregistrés en Opus 64 kb/s afin de limiter leur poids.
 
 ## Installation
 
-Dofusic est portable.
+Dofusic est portable :
 
-1. Téléchargez la dernière version dans **Releases**.
+1. Téléchargez `Dofusic.zip` dans **Releases**.
 2. Décompressez l'archive.
 3. Lancez `Dofusic.exe`.
 4. Lancez Dofus.
-
-Après le téléchargement, vous pouvez vérifier l'intégrité de l'archive avec :
-
-```powershell
-Get-FileHash .\Dofusic.zip -Algorithm SHA256
-```
-
-Pour les releases officielles construites par GitHub Actions, les utilisateurs avancés peuvent vérifier la provenance du ZIP avec GitHub CLI :
-
-```powershell
-gh attestation verify Dofusic.zip --repo Drentarra/Dofusic
-```
-
-Cette provenance concerne les archives des releases officielles; une candidate compilée localement ne reçoit pas cette attestation.
-
-Les releases sont construites par GitHub Actions ; la signature Authenticode est appliquée dès que SignPath est activé ; SmartScreen peut néanmoins demander du temps pour construire la réputation de l’éditeur et du fichier. La [préparation SignPath](.signpath/README.md) décrit l’activation; elle ne signifie pas que la candidate locale est déjà signée.
 
 Il n'y a rien à installer.
 
 Évitez simplement de déplacer ou supprimer les fichiers présents dans `Data`.
 
+Les releases officielles sont construites par GitHub Actions. Les utilisateurs avancés peuvent vérifier la provenance du ZIP avec :
+
+```powershell
+gh attestation verify Dofusic.zip --repo Drentarra/Dofusic
+```
+
 ## Premier lancement
 
 Dofusic attend d'avoir détecté une première position valide avant d'activer complètement la gestion automatique des zones et des combats.
 
-Ça évite notamment que le programme commence à changer de musique pendant l'écran de connexion, la sélection ou la création d'un personnage.
-
-En attendant, seules les musiques génériques peuvent être utilisées automatiquement.
+Ça évite que le programme change de musique pendant les écrans de connexion ou de sélection de personnage.
 
 ## Paramètres
 
@@ -132,31 +78,25 @@ Les paramètres permettent notamment de modifier :
 
 Les réglages sont conservés entre les lancements.
 
-## Pourquoi Opus 64 kb/s ?
+## Code source
 
-**Opus est le format conseillé pour utiliser vos propres musiques avec Dofusic.**
+Le code source est dans le dossier `Data` et les tests automatisés dans `tests`.
 
-Il offre un très bon rapport qualité/poids et permet de réduire fortement la taille d'une bibliothèque musicale par rapport à des MP3 à haut débit.
-
-Dofusic utilise également l'Opus 64 kb/s pour les musiques téléchargées depuis l'onglet Online.
+Le build portable Windows peut être lancé avec `BUILD_PORTABLE.bat`.
 
 ## À savoir
 
 Dofusic fonctionne actuellement sous **Windows 64 bits**.
 
-Le programme utilise la lecture de ce qui est affiché par Dofus pour reconnaître les zones et les positions. Il ne modifie pas les fichiers du jeu.
-
-Si l'interface de Dofus change fortement après une mise à jour, certaines détections peuvent nécessiter une mise à jour de Dofusic.
+Le programme utilise uniquement ce qui est affiché par Dofus pour reconnaître les zones et les positions. Il ne modifie pas les fichiers du jeu.
 
 ## Bugs / problèmes
 
-Si vous trouvez un bug, vous pouvez ouvrir une **Issue** sur GitHub.
-
-Si possible, indiquez :
+Si vous trouvez un bug, ouvrez une **Issue** sur GitHub avec si possible :
 
 - ce que vous faisiez au moment du problème ;
 - votre version de Dofusic ;
-- la zone concernée si le problème vient de la détection ;
+- la zone concernée ;
 - une capture d'écran si elle peut aider.
 
 ## Licence
@@ -170,8 +110,8 @@ Dofusic est un projet indépendant.
 Il n'est ni développé, ni approuvé, ni affilié à Ankama.
 
 Dofus et les éléments associés à Dofus appartiennent à leurs propriétaires respectifs.
+
 <img width="1896" height="692" alt="4" src="https://github.com/user-attachments/assets/30137adc-7de3-4af7-803d-bd43aaa2e442" />
 <img width="1350" height="594" alt="3" src="https://github.com/user-attachments/assets/ab23abeb-01ab-42d3-afc0-43bc2836e0c8" />
 <img width="1410" height="892" alt="2" src="https://github.com/user-attachments/assets/c007098e-f295-4e77-9e0c-792670179915" />
 <img width="1209" height="957" alt="1" src="https://github.com/user-attachments/assets/d669c7be-27a1-4ecc-83e3-10d5b5ea3b09" />
-
