@@ -179,3 +179,81 @@ def test_music_pack_never_overwrites_existing_pack_or_checksum(tmp_path, monkeyp
     with pytest.raises(FileExistsError):
         module.build_pack(source, output)
     assert output.read_bytes() == b'existing pack'
+
+
+def _ci_workflow():
+    import yaml
+
+    path = REPOSITORY_ROOT / '.github' / 'workflows' / 'ci.yml'
+    assert path.is_file(), 'read-only CI workflow is missing'
+    # BaseLoader keeps GitHub's "on" key a string instead of YAML 1.1 boolean.
+    return yaml.load(path.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+
+
+def test_ci_runs_on_main_hardening_branch_and_pull_requests_with_read_only_permissions():
+    workflow = _ci_workflow()
+    assert set(workflow['on']) == {'push', 'pull_request'}
+    assert set(workflow['on']['push']['branches']) == {'main', 'release-hardening-v1.0.2'}
+    assert workflow['permissions'] == {}
+    assert workflow['jobs']
+    for job in workflow['jobs'].values():
+        assert job['permissions'] == {'contents': 'read'}
+        assert 'uses' not in job, 'CI must not delegate to an unreviewed reusable workflow'
+
+
+def test_ci_pins_windows_python_and_checks_dependencies_probes_and_portable_build():
+    workflow = _ci_workflow()
+    jobs = list(workflow['jobs'].values())
+    assert len(jobs) == 1
+    job = jobs[0]
+    assert job['runs-on'] == 'windows-2025'
+    steps = job['steps']
+    actions = [step for step in steps if 'uses' in step]
+    assert [step['uses'] for step in actions] == [
+        'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
+        'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97',
+    ]
+    assert actions[0]['with']['persist-credentials'] == 'false'
+    assert actions[1]['with']['python-version'] == '3.11.9'
+    assert actions[1]['with']['architecture'] == 'x64'
+    run_steps = [step for step in steps if 'run' in step]
+    scripts = [step['run'] for step in run_steps]
+    for step in run_steps:
+        assert step.get('shell', job.get('defaults', {}).get('run', {}).get('shell')) == 'pwsh'
+        assert '$ErrorActionPreference = "Stop"' in step['run']
+        assert '$PSNativeCommandUseErrorActionPreference = $true' in step['run']
+        assert '${{' not in step['run'], 'GitHub inputs must not be interpolated into scripts'
+    joined = '\n'.join(scripts)
+    assert 'python -m pip install -r Data/requirements-lock.txt' in joined
+    assert 'python -m pip install --no-deps rapidocr==3.9.2' in joined
+    assert "assert 'opencv-python' not in d" in joined
+    assert "assert 'opencv-python-headless' in d" in joined
+    required_order = [
+        'python -m pytest -q',
+        'prepare_ocr_models(root /',
+        'prepare_quickjs_runtime(root)',
+        'DOFUSIC_QJS_BINARY=',
+        'python Data/tools/runtime_probe.py',
+        'python Data/tools/prepare_models.py',
+        'python Data/tools/build_portable.py --root .',
+    ]
+    positions = [joined.index(command) for command in required_order]
+    assert positions == sorted(positions)
+    assert 'Path.cwd().resolve()' in joined
+    assert 'GITHUB_ENV' in joined
+
+
+def test_ci_has_no_secrets_music_downloads_artifact_uploads_or_publishing():
+    import json
+
+    workflow = _ci_workflow()
+    serialized = json.dumps(workflow).lower()
+    for forbidden in (
+        'secrets.', 'contents: write', 'upload-artifact', 'download-artifact',
+        'music_pack', 'music-pack', 'gh release', 'softprops/', 'git push',
+        'invoke-webrequest', 'curl ', 'wget ',
+    ):
+        assert forbidden not in serialized
+    for job in workflow['jobs'].values():
+        assert set(job['permissions'].values()) <= {'read', 'none'}
+        assert 'environment' not in job
