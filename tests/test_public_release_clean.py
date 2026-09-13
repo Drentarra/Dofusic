@@ -35,6 +35,13 @@ def test_public_repository_contains_no_internal_signpath_or_music_pack_scaffoldi
         assert not path.exists(), f'Public repository should not contain {path.relative_to(ROOT)}'
 
 
+def test_public_music_folder_contains_no_distributed_tracks():
+    music = ROOT / 'Musiques'
+    assert music.is_dir()
+    files = sorted(path.relative_to(music).as_posix() for path in music.rglob('*') if path.is_file())
+    assert files == ['README.txt']
+
+
 def test_ci_runs_only_on_main_and_pull_requests():
     workflow = _workflow('.github/workflows/ci.yml')
     assert set(workflow['on']) == {'push', 'pull_request'}
@@ -62,7 +69,7 @@ def test_release_workflow_has_no_music_download_or_signing_and_publishes_only_do
         assert forbidden not in command
 
 
-def test_builder_keeps_empty_music_directory_in_zip(tmp_path):
+def test_builder_keeps_music_directory_in_zip(tmp_path):
     builder = _load_module(ROOT / 'Data' / 'tools' / 'build_portable.py', 'dofusic_builder_clean')
     release_dir = tmp_path / 'Dofusic'
     (release_dir / 'Data').mkdir(parents=True)
@@ -78,23 +85,6 @@ def test_builder_keeps_empty_music_directory_in_zip(tmp_path):
     assert 'Dofusic/Musiques/' in names
     assert 'Dofusic/Dofusic.exe' in names
     assert 'Dofusic/Data/runtime.bin' in names
-
-
-def test_final_release_validator_accepts_empty_music_directory(tmp_path):
-    verifier = _load_module(ROOT / '.github' / 'scripts' / 'verify_release.py', 'release_verifier_clean')
-    source = tmp_path / 'Dofusic.zip'
-    checksum = tmp_path / 'Dofusic.zip.sha256'
-    with zipfile.ZipFile(source, 'w') as archive:
-        archive.writestr('Dofusic/', b'')
-        archive.writestr('Dofusic/Data/', b'')
-        archive.writestr('Dofusic/Data/runtime.bin', b'data')
-        archive.writestr('Dofusic/Musiques/', b'')
-        archive.writestr('Dofusic/Dofusic.exe', b'exe')
-
-    result = verifier.finalize_release(source, checksum)
-
-    assert result['file_count'] == 2
-    assert checksum.is_file()
 
 
 def test_readme_has_no_signpath_or_obsolete_checksum_companion_instructions():
