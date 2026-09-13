@@ -1,6 +1,6 @@
 # Dofusic 🎵
 
-[**Télécharger la dernière version**](https://github.com/Drentarra/Dofusic/releases/latest)
+[**Télécharger la dernière version**](https://github.com/Drentarra/Dofusic/releases/latest/download/Dofusic.zip)
 
 Dofusic change automatiquement la musique de Dofus selon la zone où vous êtes et si vous êtes en combat.
 
