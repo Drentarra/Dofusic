@@ -6,128 +6,128 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-
-env:
-  MUSIC_SOURCE_TAG: v1.0.0
-  MUSIC_SOURCE_ASSET: Dofusic.zip
+permissions: {}
 
 jobs:
   build-windows:
     name: Build Windows portable
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 60
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v7
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          python-version: 3.11
+          persist-credentials: false
+
+      - name: Set up Python 3.11.9
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11.9'
           architecture: x64
           cache: pip
-          cache-dependency-path: |
-            Data/requirements.txt
-            Data/requirements-build.txt
+          cache-dependency-path: Data/requirements-lock.txt
 
-      - name: Download bundled music pack
+      - name: Download and verify immutable music pack
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://github.com/${{ github.repository }}/releases/download/$env:MUSIC_SOURCE_TAG/$env:MUSIC_SOURCE_ASSET"
-          $zip = Join-Path $env:RUNNER_TEMP "dofusic-music-source.zip"
-          $extract = Join-Path $env:RUNNER_TEMP "dofusic-music-source"
-
-          Invoke-WebRequest -Uri $url -OutFile $zip
-          if (Test-Path $extract) { Remove-Item $extract -Recurse -Force }
-          Expand-Archive -Path $zip -DestinationPath $extract -Force
-
-          $musicSource = Join-Path $extract "Dofusic\Musiques"
-          if (-not (Test-Path $musicSource)) {
-            throw "Dossier Musiques introuvable dans $env:MUSIC_SOURCE_ASSET"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $metadata = Get-Content -LiteralPath "Data/music-pack.json" -Raw | ConvertFrom-Json
+          if ($metadata.tag -ne "music-v1" -or $metadata.asset -ne "Dofusic-Musiques-v1.zip" -or $metadata.sha256 -cnotmatch '^[0-9a-f]{64}$') {
+            throw "Invalid pinned music pack metadata"
           }
+          $download = Join-Path $env:RUNNER_TEMP ("music-download-" + [guid]::NewGuid())
+          New-Item -ItemType Directory -Path $download | Out-Null
+          gh release download $metadata.tag --repo $env:GH_REPO --pattern $metadata.asset --dir $download
+          $zip = Join-Path $download $metadata.asset
+          $extract = Join-Path $env:RUNNER_TEMP ("music-verified-" + [guid]::NewGuid())
+          python .github/scripts/verify_release.py music $zip $metadata.sha256 $extract
+          if (Test-Path -LiteralPath "Musiques") { throw "Musiques already exists in clean checkout" }
+          Move-Item -LiteralPath (Join-Path $extract "Musiques") -Destination "Musiques"
 
-          if (Test-Path "Musiques") { Remove-Item "Musiques" -Recurse -Force }
-          Copy-Item $musicSource "Musiques" -Recurse
-
-          $musicFiles = @(Get-ChildItem "Musiques" -File -Recurse)
-          if ($musicFiles.Count -eq 0) { throw "Le pack Musiques est vide" }
-          Write-Host "[OK] Musiques copiees : $($musicFiles.Count) fichiers"
-
-      - name: Install build dependencies
+      - name: Install locked build dependencies and run tests
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          python -m pip install --upgrade pip
-          python -m pip install -r Data/requirements.txt -r Data/requirements-build.txt
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install -r Data/requirements-lock.txt
           python -m pip install --no-deps rapidocr==3.9.2
-          python -c "import importlib.metadata as m; d={x.metadata.get('Name','').lower() for x in m.distributions()}; assert 'opencv-python' not in d, 'opencv-python installe en doublon'; assert 'opencv-python-headless' in d, 'opencv-python-headless absent'"
+          python -c "import importlib.metadata as m; d={x.metadata.get('Name','').lower() for x in m.distributions()}; assert 'opencv-python' not in d, 'opencv-python installed in conflict'; assert 'opencv-python-headless' in d, 'opencv-python-headless missing'"
+          python -m pytest -q
 
       - name: Build and test portable version
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/build_portable.py --root .
 
-      - name: Prepare and verify public ZIP
+      - name: Prepare unsigned public ZIP
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $source = "Release\Dofusic_V25_1_ECO_WINDOWS_X64.zip"
-          $target = "Release\Dofusic.zip"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $source = "Release/Dofusic_V25_1_ECO_WINDOWS_X64.zip"
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Generated archive missing: $source" }
+          Copy-Item -LiteralPath $source -Destination "Release/Dofusic.zip"
 
-          if (-not (Test-Path $source)) { throw "Archive generee introuvable: $source" }
-          Copy-Item $source $target -Force
+      # Optional SignPath signing is inserted here, before final verification/hash.
+      - name: Verify final public ZIP and compute SHA256
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python .github/scripts/verify_release.py final Release/Dofusic.zip Release/Dofusic.zip.sha256
+          if (-not (Test-Path -LiteralPath "Release/BUILD_SIZE_REPORT.txt" -PathType Leaf)) { throw "Build size report missing" }
 
-          $verify = Join-Path $env:RUNNER_TEMP "dofusic-final-check"
-          if (Test-Path $verify) { Remove-Item $verify -Recurse -Force }
-          Expand-Archive -Path $target -DestinationPath $verify -Force
+      - name: Generate and validate installed build environment SBOM
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $buildPython = (python -c "import sys; from pathlib import Path; print(Path(sys.executable).resolve())").Trim()
+          if (-not [System.IO.Path]::IsPathFullyQualified($buildPython)) { throw "Build Python path must be absolute" }
+          python -m venv .sbom-venv
+          & ./.sbom-venv/Scripts/python.exe -m pip install cyclonedx-bom==7.3.1
+          & ./.sbom-venv/Scripts/python.exe -m cyclonedx_py environment $buildPython --output-reproducible --spec-version 1.6 --output-format JSON --output-file Release/Dofusic.sbom.json
+          python .github/scripts/verify_release.py sbom Release/Dofusic.sbom.json Data/requirements-lock.txt
 
-          $root = Join-Path $verify "Dofusic"
-          if (-not (Test-Path (Join-Path $root "Dofusic.exe"))) { throw "Dofusic.exe absent du ZIP final" }
-          if (-not (Test-Path (Join-Path $root "Data"))) { throw "Data absent du ZIP final" }
-          if (-not (Test-Path (Join-Path $root "Musiques"))) { throw "Musiques absent du ZIP final" }
-
-          $musicFiles = @(Get-ChildItem (Join-Path $root "Musiques") -File -Recurse)
-          if ($musicFiles.Count -eq 0) { throw "Musiques est vide dans le ZIP final" }
-
-          $hash = (Get-FileHash -Algorithm SHA256 $target).Hash.ToLowerInvariant()
-          "$hash  Dofusic.zip" | Set-Content -Encoding ascii "Release\Dofusic.zip.sha256"
-          Write-Host "[OK] ZIP final verifie - $($musicFiles.Count) musiques - SHA256 $hash"
+      - name: Attest final public ZIP
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: Release/Dofusic.zip
+          create-storage-record: false
 
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: Dofusic-Windows-x64-${{ github.ref_name }}
           path: |
             Release/Dofusic.zip
             Release/Dofusic.zip.sha256
+            Release/Dofusic.sbom.json
             Release/BUILD_SIZE_REPORT.txt
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
 
-      - name: Create or update GitHub release
+      - name: Create immutable GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = "Stop"
-          $tag = "${{ github.ref_name }}"
-          $repo = "${{ github.repository }}"
-
-          gh release view $tag --repo $repo *> $null
-          if ($LASTEXITCODE -ne 0) {
-            gh release create $tag --repo $repo --verify-tag --title "Dofusic $tag" --generate-notes --latest
-          }
-
-          gh release upload $tag `
-            "Release\Dofusic.zip" `
-            "Release\Dofusic.zip.sha256" `
-            "Release\BUILD_SIZE_REPORT.txt" `
-            --repo $repo `
-            --clobber
+          $PSNativeCommandUseErrorActionPreference = $true
+          gh release create $env:RELEASE_TAG --repo $env:GH_REPO --verify-tag --title "Dofusic $env:RELEASE_TAG" --generate-notes --latest "Release/Dofusic.zip" "Release/Dofusic.zip.sha256" "Release/Dofusic.sbom.json" "Release/BUILD_SIZE_REPORT.txt"

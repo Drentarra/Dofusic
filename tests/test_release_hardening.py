@@ -61,13 +61,16 @@ def _music_pack_module():
 
 def _music_source(tmp_path, entries):
     import zipfile
+    import warnings
 
     source = tmp_path / 'source.zip'
     with zipfile.ZipFile(source, 'w') as archive:
         for name, content in entries:
             item = zipfile.ZipInfo(name)
             item.filename = name  # Preserve malformed paths instead of Windows normalization.
-            archive.writestr(item, content)
+            with warnings.catch_warnings():
+                warnings.filterwarnings('ignore', message='Duplicate name:', category=UserWarning)
+                archive.writestr(item, content)
     return source
 
 
@@ -257,3 +260,161 @@ def test_ci_has_no_secrets_music_downloads_artifact_uploads_or_publishing():
     for job in workflow['jobs'].values():
         assert set(job['permissions'].values()) <= {'read', 'none'}
         assert 'environment' not in job
+
+
+def _release_workflow():
+    import yaml
+    return yaml.load((REPOSITORY_ROOT / '.github/workflows/build-release.yml').read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
+
+
+def test_release_actions_permissions_triggers_and_artifacts_are_pinned():
+    workflow = _release_workflow()
+    assert workflow['permissions'] == {}
+    assert set(workflow['on']) == {'push', 'workflow_dispatch'}
+    assert workflow['on']['push']['tags'] == ['v*']
+    job = workflow['jobs']['build-windows']
+    assert job['runs-on'] == 'windows-2025'
+    assert job['permissions'] == {'contents': 'write', 'id-token': 'write', 'attestations': 'write'}
+    actions = {step['uses'].split('@')[0]: step for step in job['steps'] if 'uses' in step}
+    for name, pin in {
+        'actions/checkout': '3d3c42e5aac5ba805825da76410c181273ba90b1',
+        'actions/setup-python': '5fda3b95a4ea91299a34e894583c3862153e4b97',
+        'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+        'actions/attest': '1e69f48acb82d1966a394da916b4c1698aa569d6',
+    }.items():
+        assert actions[name]['uses'] == f'{name}@{pin}'
+    assert actions['actions/checkout']['with']['persist-credentials'] == 'false'
+    assert actions['actions/setup-python']['with']['python-version'] == '3.11.9'
+    assert actions['actions/setup-python']['with']['architecture'] == 'x64'
+    expected = {'Release/Dofusic.zip', 'Release/Dofusic.zip.sha256', 'Release/Dofusic.sbom.json', 'Release/BUILD_SIZE_REPORT.txt'}
+    assert set(actions['actions/upload-artifact']['with']['path'].splitlines()) == expected
+    attest = actions['actions/attest']
+    assert attest['if'] == "startsWith(github.ref, 'refs/tags/v')"
+    assert attest['with']['subject-path'] == 'Release/Dofusic.zip'
+    assert attest['with']['create-storage-record'] == 'false'
+
+
+def test_release_scripts_fail_fast_and_gate_publication_on_verified_final_assets():
+    steps = _release_workflow()['jobs']['build-windows']['steps']
+    scripts = [step['run'] for step in steps if 'run' in step]
+    for step in steps:
+        if 'run' in step:
+            assert step['shell'] == 'pwsh'
+            assert '$ErrorActionPreference = "Stop"' in step['run']
+            assert '$PSNativeCommandUseErrorActionPreference = $true' in step['run']
+            assert '${{' not in step['run']
+    joined = '\n'.join(scripts)
+    for command in ('Data/music-pack.json', 'gh release download $metadata.tag', '--pattern $metadata.asset', 'verify_release.py music', 'python -m pip install -r Data/requirements-lock.txt', 'python -m pip install --no-deps rapidocr==3.9.2', "assert 'opencv-python' not in d", "assert 'opencv-python-headless' in d"):
+        assert command in joined
+    assert 'v1.0.0' not in joined
+    assert 'Expand-Archive' not in joined
+    assert joined.index('python -m pytest -q') < joined.index('python Data/tools/build_portable.py --root .')
+    sbom = next(step for step in steps if 'cyclonedx_py environment' in step.get('run', ''))['run']
+    assert sbom.index('$buildPython =') < sbom.index('python -m venv .sbom-venv')
+    for command in ('sys.executable', 'cyclonedx-bom==7.3.1', 'cyclonedx_py environment $buildPython', '--output-reproducible --spec-version 1.6 --output-format JSON', 'verify_release.py sbom'):
+        assert command in sbom
+    final_index = next(i for i, step in enumerate(steps) if 'verify_release.py final' in step.get('run', ''))
+    attest_index = next(i for i, step in enumerate(steps) if step.get('uses', '').startswith('actions/attest@'))
+    publish_index = next(i for i, step in enumerate(steps) if 'gh release create' in step.get('run', ''))
+    assert final_index < attest_index < publish_index
+    publish = steps[publish_index]
+    assert publish['if'] == "startsWith(github.ref, 'refs/tags/v')"
+    assert publish['env']['RELEASE_TAG'] == '${{ github.ref_name }}'
+    assert publish['env']['GH_REPO'] == '${{ github.repository }}'
+    assert '--verify-tag' in publish['run']
+    assert '--clobber' not in publish['run']
+    for asset in ('Dofusic.zip', 'Dofusic.zip.sha256', 'Dofusic.sbom.json', 'BUILD_SIZE_REPORT.txt'):
+        assert 'Release/' + asset in publish['run'].replace('\\', '/')
+
+
+def _release_verifier():
+    import importlib.util
+    path = REPOSITORY_ROOT / '.github/scripts/verify_release.py'
+    assert path.is_file(), 'safe release verifier is missing'
+    spec = importlib.util.spec_from_file_location('verify_release', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_verified_music_extracts_only_after_hash_and_archive_validation(tmp_path):
+    import hashlib
+    verifier = _release_verifier()
+    source = _music_source(tmp_path, [('Musiques/track.opus', b'music')])
+    destination = tmp_path / 'extract'
+    verifier.extract_music(source, hashlib.sha256(source.read_bytes()).hexdigest(), destination)
+    assert (destination / 'Musiques/track.opus').read_bytes() == b'music'
+    assert sorted(path.name for path in destination.iterdir()) == ['Musiques']
+
+
+def test_verified_music_rejects_wrong_hash_before_any_extraction(tmp_path):
+    import pytest
+    verifier = _release_verifier()
+    source = _music_source(tmp_path, [('Musiques/track.opus', b'music')])
+    destination = tmp_path / 'extract'
+    with pytest.raises(ValueError, match='SHA256'):
+        verifier.extract_music(source, '0' * 64, destination)
+    assert not destination.exists()
+
+
+def test_verified_music_rejects_empty_unexpected_or_unsafe_zip_before_any_extraction(tmp_path):
+    import hashlib
+    import pytest
+    verifier = _release_verifier()
+    fixtures = [[], [('Musiques/empty.opus', b'')], [('Dofusic/Musiques/track.opus', b'music')], [('Musiques/track.opus', b'music'), ('Data/extra', b'extra')], [('Musiques/../outside.opus', b'music')], [('Musiques/a\\outside.opus', b'music')], [('Musiques/NUL.opus', b'music')], [('Musiques/track.opus.', b'music')], [('Musiques/track.opus', b'1'), ('Musiques/TRACK.opus', b'2')], [('Musiques/A/one.opus', b'1'), ('Musiques/a/two.opus', b'2')], [('Musiques/a', b'1'), ('Musiques/a/two.opus', b'2')], [('Musiques/track.opus', b'1'), ('Musiques/track.opus', b'2')]]
+    for entries in fixtures:
+        source = _music_source(tmp_path, entries)
+        destination = tmp_path / 'extract'
+        with pytest.raises(ValueError):
+            verifier.extract_music(source, hashlib.sha256(source.read_bytes()).hexdigest(), destination)
+        assert not destination.exists()
+
+
+def test_final_release_validates_layout_and_writes_digest_for_exact_bytes(tmp_path):
+    import hashlib
+    verifier = _release_verifier()
+    source = _music_source(tmp_path, [('Dofusic/Dofusic.exe', b'executable'), ('Dofusic/Data/runtime.bin', b'data'), ('Dofusic/Musiques/track.opus', b'music')])
+    checksum = tmp_path / 'Dofusic.zip.sha256'
+    verifier.finalize_release(source, checksum)
+    assert checksum.read_text(encoding='ascii') == f'{hashlib.sha256(source.read_bytes()).hexdigest()}  {source.name}\n'
+
+
+def test_final_release_rejects_incomplete_or_unsafe_layout_before_checksum(tmp_path):
+    import pytest
+    verifier = _release_verifier()
+    valid = [('Dofusic/Dofusic.exe', b'exe'), ('Dofusic/Data/a', b'data'), ('Dofusic/Musiques/a', b'music')]
+    fixtures = [valid[1:], valid[:2], [valid[0], valid[2]], [('Dofusic/Dofusic.exe', b''), *valid[1:]], [*valid, ('Dofusic/extra.txt', b'extra')], [*valid, ('Other/extra.txt', b'extra')], [*valid, ('Dofusic/Data/../bad', b'extra')], [*valid, ('Dofusic/data/B', b'extra')]]
+    for entries in fixtures:
+        source = _music_source(tmp_path, entries)
+        checksum = tmp_path / 'Dofusic.zip.sha256'
+        with pytest.raises(ValueError):
+            verifier.finalize_release(source, checksum)
+        assert not checksum.exists()
+
+
+def test_sbom_validation_requires_schema_actual_rapidocr_and_all_lock_versions(tmp_path):
+    import json
+    import pytest
+    verifier = _release_verifier()
+    lock = tmp_path / 'lock.txt'
+    lock.write_text('numpy==2.4.6\nopencv-python-headless==4.14.0.94\n', encoding='utf-8')
+    sbom = tmp_path / 'sbom.json'
+    valid = {'bomFormat': 'CycloneDX', 'specVersion': '1.6', 'components': [{'name': 'numpy', 'version': '2.4.6'}, {'name': 'opencv-python-headless', 'version': '4.14.0.94'}, {'name': 'RapidOCR', 'version': '3.9.2'}]}
+    sbom.write_text(json.dumps(valid), encoding='utf-8')
+    verifier.validate_sbom(sbom, lock)
+    for document in [{**valid, 'specVersion': '1.5'}, {**valid, 'components': valid['components'][:2]}, {**valid, 'components': [{**valid['components'][0], 'version': '0'}, *valid['components'][1:]]}, {**valid, 'components': [*valid['components'], {'name': 'opencv-python', 'version': '4'}]}]:
+        sbom.write_text(json.dumps(document), encoding='utf-8')
+        with pytest.raises(ValueError):
+            verifier.validate_sbom(sbom, lock)
+
+
+def test_verified_music_rejects_windows_extended_device_aliases_before_extraction(tmp_path):
+    import hashlib
+    import pytest
+    verifier = _release_verifier()
+    for name in ('COM\u00b9.opus', 'LPT\u00b2.opus', 'CON .opus'):
+        source = _music_source(tmp_path, [('Musiques/' + name, b'music')])
+        destination = tmp_path / 'extract'
+        with pytest.raises(ValueError):
+            verifier.extract_music(source, hashlib.sha256(source.read_bytes()).hexdigest(), destination)
+        assert not destination.exists()
