@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - release-hardening-v1.0.2
   pull_request:
 
 permissions: {}
@@ -51,7 +50,7 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/runtime_probe.py
           python Data/tools/prepare_models.py
-      - name: Build portable control without music downloads
+      - name: Build portable control
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
