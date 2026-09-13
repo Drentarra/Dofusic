@@ -49,9 +49,9 @@ def test_build_bootstrap_uses_uv_managed_python_without_windows_installer_collis
     assert 'uv_unmanaged_install' in batch
     assert 'uv_python_install_dir' in batch
     assert 'uv_python_install_registry=0' in batch
-    assert 'venv "%venv%" --python 3.11.16 --managed-python' in batch
-    assert 'python install 3.11.16' in batch
-    assert 'python find 3.11.16 --managed-python' not in batch
+    assert 'venv "%venv%" --python 3.11.9 --managed-python' in batch
+    assert 'python install 3.11.9' in batch
+    assert 'python find 3.11.9 --managed-python' not in batch
     assert 'python-3.11.9-amd64.exe' not in batch
     assert 'include_tcltk=1' not in batch
 
@@ -65,6 +65,16 @@ def test_build_bootstrap_uses_disposable_venv_instead_of_mutating_managed_python
     assert 'set "pyexe=%venv%\\scripts\\python.exe"' in batch
     assert 'pip install --python "%pyexe%"' in batch
     assert 'pip install --python "%pymanaged%"' not in batch
+
+
+def test_build_bootstrap_installs_the_deterministic_lock_before_rapidocr():
+    batch = (ROOT / 'BUILD_PORTABLE.bat').read_text(encoding='utf-8', errors='replace').lower()
+    lock_install = 'pip install --python "%pyexe%" -r "%data%\\requirements-lock.txt"'
+
+    assert lock_install in batch
+    assert '-r "%data%\\requirements.txt"' not in batch
+    assert '-r "%data%\\requirements-build.txt"' not in batch
+    assert batch.index(lock_install) < batch.index('pip install --python "%pyexe%" --no-deps rapidocr==3.9.2')
 
 
 def test_build_bootstrap_verifies_tkinter_before_installing_dependencies():

@@ -42,7 +42,7 @@ echo          DOFUSIC V25.1 ECO - BUILD PORTABLE WINDOWS X64
 echo ==========================================================
 echo.
 echo Architecture du builder :
-echo   uv local -^> Python 3.11.16 gere et immuable -^> venv de build
+echo   uv local -^> Python 3.11.9 gere et immuable -^> venv de build
 echo.
 echo Le Python deja installe sur ce PC n'est jamais utilise,
 echo modifie ou inscrit dans le registre. Les dependances sont
@@ -91,12 +91,12 @@ rem ------------------------------------------------------------
 rem 2. Installer le CPython gere, puis creer un VENV JETABLE.
 rem    Le CPython gere reste volontairement non modifie.
 rem ------------------------------------------------------------
-echo [2/6] Preparation du Python 3.11.16 gere + venv de BUILD...
-"%UVEXE%" python install 3.11.16 --install-dir "%PYMANAGED%" --no-bin --no-registry
+echo [2/6] Preparation du Python 3.11.9 gere + venv de BUILD...
+"%UVEXE%" python install 3.11.9 --install-dir "%PYMANAGED%" --no-bin --no-registry
 if errorlevel 1 goto :fail
 
 if exist "%VENV%" rmdir /s /q "%VENV%"
-"%UVEXE%" venv "%VENV%" --python 3.11.16 --managed-python
+"%UVEXE%" venv "%VENV%" --python 3.11.9 --managed-python
 if errorlevel 1 goto :fail
 
 if not exist "%PYEXE%" (
@@ -118,7 +118,7 @@ rem ------------------------------------------------------------
 rem 4. Installer les dependances UNIQUEMENT dans le venv.
 rem ------------------------------------------------------------
 echo [4/6] Installation des dependances dans le venv de BUILD...
-"%UVEXE%" pip install --python "%PYEXE%" -r "%DATA%\requirements.txt" -r "%DATA%\requirements-build.txt"
+"%UVEXE%" pip install --python "%PYEXE%" -r "%DATA%\requirements-lock.txt"
 if errorlevel 1 goto :fail
 
 rem RapidOCR declare opencv-python comme dependance. Dofusic utilise volontairement

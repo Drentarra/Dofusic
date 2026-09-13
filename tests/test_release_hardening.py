@@ -18,3 +18,19 @@ def test_release_documentation_and_update_checks_are_present():
     assert 'directory: "/Data"' in dependabot
     assert 'package-ecosystem: "github-actions"' in dependabot
     assert 'directory: "/"' in dependabot
+
+
+def test_portable_build_dependency_lock_is_complete_and_avoids_opencv_conflict():
+    lock = REPOSITORY_ROOT / 'Data' / 'requirements-lock.txt'
+
+    assert lock.is_file()
+    entries = [
+        line.strip()
+        for line in lock.read_text(encoding='utf-8').splitlines()
+        if line.strip() and not line.lstrip().startswith('#')
+    ]
+    assert entries
+    assert all('==' in entry for entry in entries)
+    assert any(entry.lower().startswith('opencv-python-headless==') for entry in entries)
+    assert not any(entry.lower().startswith('opencv-python==') for entry in entries)
+    assert not any(entry.lower().startswith('rapidocr==') for entry in entries)
