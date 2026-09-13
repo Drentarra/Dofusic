@@ -10,6 +10,8 @@ Il est aussi possible d'écouter ses propres musiques manuellement ou d'en cherc
 
 ## Fonctionnement
 
+**Désactiver au préalable les musiques de Dofus**
+
 Dofusic détecte la position et la zone affichées dans Dofus.
 
 À partir de ça, il peut automatiquement :
