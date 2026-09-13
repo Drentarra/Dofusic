@@ -29,7 +29,7 @@ def _safe_relative_path(name):
     if any(
         not part or part in {'.', '..'} or part.endswith((' ', '.'))
         or re.search(r'[\\:\x00-\x1f<>"|?*]', part)
-        or part.split('.')[0].upper() in DOS_NAMES
+        or part.split('.')[0].rstrip(' ').upper() in DOS_NAMES
         for part in parts
     ):
         raise ValueError(f'Invalid music path: {name!r}')

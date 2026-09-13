@@ -596,3 +596,63 @@ def test_signed_archive_rejects_missing_corrupt_nonregular_and_existing_destinat
     with pytest.raises(FileExistsError):
         verifier.validate_signed_release(candidate, signed, extract)
     assert sentinel.read_bytes() == b'existing'
+
+
+def test_interjob_artifacts_keep_names_and_signer_python_is_pinned():
+    workflow = _release_workflow()
+    build = workflow['jobs']['build-windows']
+    signer = workflow['jobs']['sign-windows']
+    final = workflow['jobs']['release-windows']
+
+    unsigned = next(step for step in build['steps'] if step.get('name') == 'Transfer unsigned ZIP to signing job')
+    assert unsigned['with']['name'] == 'Dofusic-unsigned-candidate'
+    assert set(unsigned['with']['path'].splitlines()) == {
+        'Release/Dofusic.zip',
+        'Release/BUILD_SIZE_REPORT.txt',
+    }
+    assert 'archive' not in unsigned['with']
+    assert unsigned['with']['compression-level'] == '0'
+
+    signed = next(step for step in signer['steps'] if step.get('name') == 'Transfer signed ZIP to final job')
+    assert signed['with']['name'] == 'Dofusic-signed-candidate'
+    assert 'archive' not in signed['with']
+    assert signed['with']['compression-level'] == '0'
+
+    uploads = [
+        step
+        for job in workflow['jobs'].values()
+        for step in job['steps']
+        if step.get('uses', '').startswith('actions/upload-artifact@')
+    ]
+    archiveless = [step for step in uploads if step.get('with', {}).get('archive') == 'false']
+    assert len(archiveless) == 1
+    assert archiveless[0].get('id') == 'signpath-upload'
+    assert archiveless[0]['with']['path'] == 'Release/Dofusic.zip'
+
+    setup = next(step for step in signer['steps'] if step.get('uses', '').startswith('actions/setup-python@'))
+    assert setup['uses'] == 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97'
+    assert setup['with']['python-version'] == '3.11.9'
+    assert setup['with']['architecture'] == 'x64'
+
+    unsigned_download = next(step for step in final['steps'] if step.get('name') == 'Download unsigned candidate')
+    signed_download = next(step for step in final['steps'] if step.get('name') == 'Download signed candidate')
+    select_signed = next(step for step in final['steps'] if step.get('name') == 'Select signed candidate')
+    assert unsigned_download['with']['name'] == 'Dofusic-unsigned-candidate'
+    assert unsigned_download['with']['path'] == 'Release'
+    assert signed_download['with']['name'] == 'Dofusic-signed-candidate'
+    assert signed_download['with']['path'] == 'Release/signed'
+    assert 'Release/signed/Dofusic.zip' in select_signed['run']
+    assert '-Destination Release/Dofusic.zip' in select_signed['run']
+
+
+def test_music_pack_rejects_windows_device_name_with_space_before_extension(tmp_path, monkeypatch):
+    import hashlib
+    import pytest
+
+    module = _music_pack_module()
+    source = _music_source(tmp_path, [('Dofusic/Musiques/CON .opus', b'music')])
+    monkeypatch.setattr(module, 'SOURCE_SHA256', hashlib.sha256(source.read_bytes()).hexdigest())
+    output = tmp_path / 'pack.zip'
+    with pytest.raises(ValueError):
+        module.build_pack(source, output)
+    assert not output.exists()
