@@ -11,7 +11,6 @@ import urllib.request
 import zipfile
 
 
-
 QUICKJS_RUNTIME = {
     'version': '0.16.2',
     'url': 'https://github.com/quickjs-ng/quickjs/releases/download/v0.16.2/qjs-windows-x86_64.exe',
@@ -101,8 +100,7 @@ def validate_source(root: Path, data_dir: Path) -> None:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise BuildError('Fichiers source manquants:\n- ' + '\n- '.join(missing))
-    if not (root / 'Musiques').is_dir():
-        (root / 'Musiques').mkdir(parents=True, exist_ok=True)
+    (root / 'Musiques').mkdir(parents=True, exist_ok=True)
 
 
 def validate_release(release_dir: Path) -> None:
@@ -129,43 +127,28 @@ def validate_release(release_dir: Path) -> None:
     if missing:
         raise BuildError('Release incomplète:\n- ' + '\n- '.join(missing))
 
-    ffmpeg_candidates = [
-        path for path in data_dir.rglob('*.exe')
-        if 'ffmpeg' in path.name.casefold()
-    ]
-    if not ffmpeg_candidates:
-        raise BuildError('FFmpeg embarqué introuvable dans Data.')
+    ffmpeg_candidates = [path for path in data_dir.rglob('*.exe') if 'ffmpeg' in path.name.casefold()]
     if len(ffmpeg_candidates) != 1:
         raise BuildError(f'FFmpeg doit être embarqué une seule fois, trouvé: {len(ffmpeg_candidates)} copies.')
 
     qjs_candidates = [path for path in data_dir.rglob('qjs.exe') if path.is_file()]
-    if not qjs_candidates:
-        raise BuildError('Runtime QuickJS embarqué introuvable dans Data.')
     if len(qjs_candidates) != 1:
         raise BuildError(f'QuickJS doit être embarqué une seule fois, trouvé: {len(qjs_candidates)} copies.')
     if qjs_candidates[0].stat().st_size > 10 * 1024 * 1024:
         raise BuildError(f'QuickJS anormalement volumineux: {_human_size(qjs_candidates[0].stat().st_size)}')
 
-    deno_candidates = [path for path in data_dir.rglob('deno.exe') if path.is_file()]
-    if deno_candidates:
+    if [path for path in data_dir.rglob('deno.exe') if path.is_file()]:
         raise BuildError('Runtime Deno residuel detecte dans la release slim.')
-    ejs_candidates = [
-        path for path in data_dir.rglob('*')
-        if path.is_file() and 'yt_dlp_ejs' in path.parts
-    ]
-    if not ejs_candidates:
+    if not [path for path in data_dir.rglob('*') if path.is_file() and 'yt_dlp_ejs' in path.parts]:
         raise BuildError('Scripts yt_dlp_ejs embarqués introuvables dans Data.')
 
     for filename, metadata in OCR_MODELS.items():
-        model = data_dir / 'Models' / filename
-        actual = _sha256(model)
-        if actual != metadata['sha256']:
+        if _sha256(data_dir / 'Models' / filename) != metadata['sha256']:
             raise BuildError(f'Modèle OCR corrompu dans la release: {filename}')
 
     (data_dir / 'UserData' / 'logs').mkdir(parents=True, exist_ok=True)
     (data_dir / 'UserData' / 'cache' / 'online').mkdir(parents=True, exist_ok=True)
     (data_dir / 'UserData' / 'cache' / 'thumbnails').mkdir(parents=True, exist_ok=True)
-
 
 
 def _dir_size(path: Path) -> int:
@@ -195,9 +178,6 @@ def _human_size(size: int) -> str:
 
 
 def _check_no_opencv_duplicate(data_dir: Path) -> None:
-    # Un doublon opencv-python + opencv-python-headless fournit le meme module cv2
-    # deux fois. Il gonfle fortement le venv/build et peut rendre la version de cv2
-    # non deterministe. Le package final ne doit jamais etre produit dans cet etat.
     names = {path.name.casefold() for path in data_dir.iterdir()} if data_dir.is_dir() else set()
     full = any(name.startswith('opencv_python-') and name.endswith('.dist-info') for name in names)
     headless = any(name.startswith('opencv_python_headless-') and name.endswith('.dist-info') for name in names)
@@ -206,17 +186,12 @@ def _check_no_opencv_duplicate(data_dir: Path) -> None:
 
 
 def _check_removed_runtime_artifacts(data_dir: Path) -> None:
-    """Fail the public build if a removed V24 runtime slips back into Data."""
     offenders: list[Path] = []
     if not data_dir.is_dir():
         return
     for path in data_dir.rglob('*'):
         name = path.name.casefold()
-        if (
-            'webview' in name
-            or name.startswith('pythonnet-')
-            or name == 'pp-ocrv6_rec_medium.onnx'
-        ):
+        if 'webview' in name or name.startswith('pythonnet-') or name == 'pp-ocrv6_rec_medium.onnx':
             offenders.append(path)
     if offenders:
         details = '\n- '.join(str(path) for path in offenders[:20])
@@ -224,7 +199,6 @@ def _check_removed_runtime_artifacts(data_dir: Path) -> None:
 
 
 def _check_large_duplicate_files(data_dir: Path, *, threshold_bytes: int = 8 * 1024 * 1024) -> None:
-    """Reject exact duplicate large runtime files before publishing the ZIP."""
     by_size: dict[int, list[Path]] = {}
     if not data_dir.is_dir():
         return
@@ -247,9 +221,7 @@ def _check_large_duplicate_files(data_dir: Path, *, threshold_bytes: int = 8 * 1
             by_hash.setdefault(_sha256(path), []).append(path)
         duplicates.extend(group for group in by_hash.values() if len(group) > 1)
     if duplicates:
-        details = []
-        for group in duplicates[:10]:
-            details.append(' = '.join(str(path.relative_to(data_dir)) for path in group))
+        details = [' = '.join(str(path.relative_to(data_dir)) for path in group) for group in duplicates[:10]]
         raise BuildError('Gros fichiers runtime dupliqués détectés:\n- ' + '\n- '.join(details))
 
 
@@ -262,10 +234,8 @@ def _write_size_report(release_dir: Path, zip_path: Path, report_path: Path) -> 
     if data_dir.is_dir():
         for item in data_dir.iterdir():
             entries.append((_dir_size(item), f'Data/{item.name}'))
-    if (release_dir / 'Musiques').exists():
-        entries.append((_dir_size(release_dir / 'Musiques'), 'Musiques'))
-    if (release_dir / 'Dofusic.exe').is_file():
-        entries.append((_dir_size(release_dir / 'Dofusic.exe'), 'Dofusic.exe'))
+    entries.append((_dir_size(release_dir / 'Musiques'), 'Musiques'))
+    entries.append((_dir_size(release_dir / 'Dofusic.exe'), 'Dofusic.exe'))
     entries.sort(reverse=True)
 
     lines = [
@@ -278,21 +248,8 @@ def _write_size_report(release_dir: Path, zip_path: Path, report_path: Path) -> 
         '20 plus gros elements :',
     ]
     lines.extend(f'{_human_size(size):>12}  {name}' for size, name in entries[:20])
-    lines += [
-        '',
-        'Regles Slim appliquees :',
-        '- un seul OpenCV : opencv-python-headless',
-        '- RapidOCR 3.9.2 installe --no-deps (dependances maitrisees explicitement)',
-        '- aucun collect_all PyInstaller pour RapidOCR / yt-dlp / imageio-ffmpeg',
-        '- aucun navigateur embarque ni WebView2 : recherche online via yt-dlp',
-        '- QuickJS-NG embarque en qjs.exe (~2 MiB) a la place de Deno (~97 MiB)',
-        '- garde anti-doublons: aucun gros fichier runtime identique en plusieurs copies',
-        '- modules de build/tests et sous-modules lourds inutiles exclus de PyInstaller',
-        '- backends OCR inutiles exclus (TensorRT, Torch, Paddle, OpenVINO, MNN)',
-        '- UPX desactive : aucune penalite de demarrage ni risque antivirus ajoute',
-        '',
-    ]
-    report_path.write_text('\n'.join(lines), encoding='utf-8')
+    report_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
 
 def _copy_music_library(source: Path, destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
@@ -310,8 +267,11 @@ def _make_zip(release_dir: Path, zip_path: Path) -> None:
     zip_path.unlink(missing_ok=True)
     with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for path in sorted(release_dir.rglob('*')):
-            if path.is_file():
-                archive.write(path, Path(release_dir.name) / path.relative_to(release_dir))
+            relative = Path(release_dir.name) / path.relative_to(release_dir)
+            if path.is_dir():
+                archive.writestr(relative.as_posix().rstrip('/') + '/', b'')
+            elif path.is_file():
+                archive.write(path, relative)
 
 
 def build(root: Path) -> Path:
@@ -361,21 +321,16 @@ def build(root: Path) -> Path:
     return zip_path
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description='Construit Dofusic V25.1 ECO en version Windows portable autonome.')
+def main() -> None:
+    parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
-    return parser.parse_args(argv)
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = _parse_args(argv)
+    args = parser.parse_args()
     try:
         build(args.root)
-    except (BuildError, OSError, subprocess.SubprocessError) as exc:
-        print(f'\n[ECHEC] {exc}', file=sys.stderr)
-        return 1
-    return 0
+    except (BuildError, subprocess.TimeoutExpired) as exc:
+        print(f'[ERREUR] {exc}', file=sys.stderr)
+        raise SystemExit(1) from exc
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    main()
