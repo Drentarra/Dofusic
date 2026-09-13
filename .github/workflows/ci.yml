@@ -1,0 +1,58 @@
+﻿name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - release-hardening-v1.0.2
+  pull_request:
+
+permissions: {}
+
+jobs:
+  checks:
+    name: Tests, runtime probes and portable build
+    runs-on: windows-2025
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: '3.11.9'
+          architecture: x64
+      - name: Install locked dependencies and check OpenCV
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install -r Data/requirements-lock.txt
+          python -m pip install --no-deps rapidocr==3.9.2
+          python -c "import importlib.metadata as m; d={x.metadata.get('Name','').lower() for x in m.distributions()}; assert 'opencv-python' not in d, 'opencv-python installed twice'; assert 'opencv-python-headless' in d, 'opencv-python-headless missing'"
+      - name: Run tests
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pytest -q
+      - name: Prepare checked OCR models and QuickJS runtime
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -c "import os; from pathlib import Path; from Data.tools.build_portable import prepare_ocr_models, prepare_quickjs_runtime; root = Path.cwd().resolve(); prepare_ocr_models(root / 'Data'); qjs = prepare_quickjs_runtime(root); env = Path(os.environ['GITHUB_ENV']); env.open('a', encoding='utf-8').write(f'DOFUSIC_QJS_BINARY={qjs}\n')"
+      - name: Probe required runtimes
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python Data/tools/runtime_probe.py
+          python Data/tools/prepare_models.py
+      - name: Build portable control without music downloads
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python Data/tools/build_portable.py --root .
