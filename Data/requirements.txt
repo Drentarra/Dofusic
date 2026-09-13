@@ -4,7 +4,7 @@
 
 # OCR / inference
 onnxruntime==1.29.0
-numpy>=2.0,<3.0
+numpy>=2.5.3,<3.0
 opencv-python-headless>=4.10,<5.0
 rapidfuzz>=3.14,<4.0
 mss>=10,<11
