@@ -13,26 +13,29 @@ UTILISATEUR FINAL
 Extraire le ZIP dans un dossier inscriptible puis lancer Dofusic.exe.
 Aucun Python système, pip, droit administrateur ou installateur Dofusic n'est requis.
 
+Le ZIP contient :
+- Dofusic.exe
+- Data\
+- Musiques\ (sans morceaux distribués avec le programme)
+
+Ajoutez vos propres musiques dans le dossier Musiques.
+
 V25.1 ECO
----------------
+---------
 - Mode développeur et mot de passe supprimés.
 - Session YouTube supprimée.
 - pywebview / WebView2 / pythonnet supprimés du runtime.
-- Recherche online légère via yt-dlp, suggestions HTTP et lecture file-backed.
+- Recherche online légère via yt-dlp.
 - Un seul modèle OCR zone PP-OCRv6 Small est embarqué pour le chemin live.
-- Profil ECO : capture 10 FPS, UI 12,5 Hz et OCR adaptatif (pas de relecture d une zone identique en boucle).
+- Profil ECO : capture 10 FPS, UI 12,5 Hz et OCR adaptatif.
 - Visualiseur FFT désactivé par défaut ; il reste réactivable dans Paramètres.
-- Suggestions YouTube réparées via le flux JSON léger client=firefox&ds=yt.
-- Miniatures YouTube limitées au format mqdefault et téléchargées une par une.
-- Cache online neuf borné à 128 Mo par défaut ; cache miniatures réduit.
-- L'ancien Data\UserData\webview2 est supprimé automatiquement à la migration.
+- Cache online borné à 128 Mo par défaut.
 
 Le mode OCR/local fonctionne hors ligne. Une connexion Internet n'est utilisée que
 quand la fonction Musique online est utilisée.
 
-
 AUDIO / STOCKAGE
+----------------
 - Online : cache et ajout Musiques en Opus 64 kb/s.
-- Local : formats audio courants supplémentaires acceptés via FFmpeg en secours.
-- CONVERTIR_EN_OPUS_64K.bat : à poser à côté de vos musiques pour créer un dossier Musiques compressé en Opus 64 kb/s.
-- Les originaux ne sont jamais modifiés par le convertisseur.
+- Local : formats audio courants acceptés via FFmpeg.
+- Format conseillé : Opus 64 kb/s.
