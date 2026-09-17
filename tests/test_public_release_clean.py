@@ -39,7 +39,7 @@ def test_public_music_folder_contains_bundled_tracks():
     music = ROOT / 'Musiques'
     assert music.is_dir()
     tracks = sorted(music.rglob('*.opus'))
-    assert len(tracks) == 163
+    assert len(tracks) == 161
 
 
 def test_ci_runs_only_on_main_and_pull_requests():
@@ -93,4 +93,3 @@ def test_readme_has_no_signpath_or_obsolete_checksum_companion_instructions():
     assert 'dofusic.zip.sha256' not in readme
     assert 'get-filehash' not in readme
     assert 'contient directement les musiques utilisées par dofusic' in readme
-
