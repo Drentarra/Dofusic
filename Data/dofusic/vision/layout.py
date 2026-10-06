@@ -49,7 +49,7 @@ class HUDGeometry:
 
     combat_x: int = 0
     combat_y: int = 0
-    combat_width: int = 160
+    combat_width: int = 320
     combat_height: int = 40
     # The physical toolbar background occupies 37 px at the reference UI scale.
     # Its height is theme-independent in all supplied captures and remains valid
@@ -134,7 +134,10 @@ def estimate_hud_transform(
         return None
 
     probe_h = min(h, max(96, geometry.bootstrap_capture_height))
-    probe_w = min(w, 180)
+    # A collapsed combat toolbar is only one +/- button wide. Probing the
+    # former 180-pixel row misses it at smaller UI scales and breaks both OCR
+    # and combat crops. Measure inside that first button instead.
+    probe_w = min(w, 32)
     probe = image[:probe_h, :probe_w]
     if probe.ndim == 2:
         gray = probe.astype(np.uint8, copy=False)

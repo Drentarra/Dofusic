@@ -616,7 +616,7 @@ class DofusicController:
             # Even with no audio file, the UI still has a stable user-facing context.
             self.state.display_theme = location.parent_area_name or location.name
 
-    def _update_combat_from_toolbar(self, toolbar: np.ndarray) -> None:
+    def _update_combat_from_toolbar(self, toolbar: np.ndarray | None) -> None:
         observation = analyze_combat_toolbar(toolbar, self.hud_geometry)
         self.state.combat_confidence = float(observation.confidence)
         transition = self.combat_tracker.update(observation)
@@ -626,7 +626,7 @@ class DofusicController:
         self.state.in_combat = bool(transition)
         label = 'combat' if transition else 'hors combat'
         self.logger.info(
-            'COMBAT state=%s confidence=%.3f ratio=%.3f',
+            'COMBAT state=%s confidence=%.3f shape_similarity=%.3f',
             label, observation.confidence, observation.luminance_ratio,
         )
 
@@ -969,6 +969,7 @@ class DofusicController:
                 self.last_capture_seen_at > 0.0
                 and now - self.last_capture_seen_at >= self.config.capture_missing_grace_sec
             ):
+                self._update_combat_from_toolbar(None)
                 self.state.window_found = False
                 self.state.overlay_hwnd = None
                 self.state.combat_overlay_rect = None
@@ -982,6 +983,9 @@ class DofusicController:
         captured_at = float(snapshot.captured_at)
 
         if frame is None:
+            # A missing capture interrupts consecutive visual confirmation,
+            # while leaving the last confirmed combat/audio state untouched.
+            self._update_combat_from_toolbar(None)
             # Overlay geometry is never kept through the capture grace period: if
             # Dofus is covered/minimized, no Dofusic frame may float over another app.
             self.state.overlay_hwnd = None
