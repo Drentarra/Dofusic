@@ -74,12 +74,26 @@ def _shape_score(mask: np.ndarray | None, name: str) -> float:
             intersection = float(np.count_nonzero(shifted & reference))
             denominator = int(shifted.sum()) + int(reference.sum())
             best = max(best, 2.0 * intersection / max(1, denominator))
+            if name in _TOGGLE_OUTLINES:
+                # The +/- strokes are only 1-2 pixels thick. Antialiasing at
+                # fractional scales changes their area more than their shape.
+                # Symmetric one-pixel coverage tolerates stroke thickness while
+                # still penalizing a missing vertical arm or unrelated pixels.
+                expanded = cv2.dilate(shifted, np.ones((3, 3), dtype=np.uint8))
+                precision = float(np.count_nonzero(shifted & _TOGGLE_OUTLINES[name])) / max(1, int(shifted.sum()))
+                recall = float(np.count_nonzero(reference & expanded)) / max(1, int(reference.sum()))
+                coverage = 2.0 * precision * recall / max(0.001, precision + recall)
+                best = max(best, 0.94 * coverage)
     return best
 
 
 _SHAPES = {
     name: np.array([[(row >> x) & 1 for x in range(_GLYPH_SIZE)] for row in rows], dtype=np.uint8)
     for name, rows in GLYPH_ROWS.items()
+}
+_TOGGLE_OUTLINES = {
+    name: cv2.dilate(_SHAPES[name], np.ones((3, 3), dtype=np.uint8))
+    for name in ('plus', 'minus')
 }
 
 
@@ -112,6 +126,8 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
     # Measuring a 37-pixel toolbar necessarily rounds its antialiased boundary.
     # Refine only that subpixel scale uncertainty, never the shape thresholds.
     # Each hypothesis still requires the same complete icon/empty-region proof.
+    # Occlusion checks use the original ROI: resampling can move a legitimate
+    # button rim into the separator, or crop an obstruction off the far edge.
     candidates = []
     allow_collapsed_combat = _empty_hud_surround(canonical)
     for factor in (1.01, 1.02, 1.03):
@@ -141,8 +157,6 @@ def _empty_hud_surround(canonical: np.ndarray) -> bool:
 
 def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = True) -> CombatObservation:
     unknown = CombatObservation(None, 0.0, 0.0, 0.0, 0.0)
-    if float(np.percentile(canonical[38:40], 95)) > 18:
-        return unknown
     masks = [_glyph_mask(canonical[6:31, x:x + _GLYPH_SIZE]) for x in _GLYPH_X]
     plus = _shape_score(masks[0], 'plus')
     minus = _shape_score(masks[0], 'minus')

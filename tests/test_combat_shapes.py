@@ -30,7 +30,7 @@ def test_collapsed_combat_recognizes_plus_shape_across_themes(background, foregr
     assert observation.confidence >= 0.60
 
 
-@pytest.mark.parametrize('scale', [0.75, 0.8, 0.9, 1.1, 1.25, 1.5, 1.75, 2.0])
+@pytest.mark.parametrize('scale', [0.75, 0.76, 0.8, 0.81, 0.9, 1.1, 1.25, 1.5, 1.75, 2.0])
 def test_single_button_calibration_keeps_combat_detectable(scale):
     image = cv2.resize(collapsed_toolbar(), None, fx=scale, fy=scale, interpolation=cv2.INTER_LINEAR)
     observation = analyze_combat_toolbar(extract_hud_inputs(image).combat)
