@@ -60,7 +60,7 @@ def test_release_workflow_has_no_music_download_or_signing_and_publishes_only_do
         step
         for job in workflow['jobs'].values()
         for step in job.get('steps', [])
-        if 'gh release create' in step.get('run', '')
+        if step.get('name') == 'Publish GitHub release'
     ]
     assert len(create_release_steps) == 1
     command = create_release_steps[0]['run']
