@@ -55,3 +55,13 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/build_portable.py --root .
+      - name: Upload tested Windows portable
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Dofusic-portable-combat-shapes
+          path: |
+            Release/Dofusic_V25_1_ECO_WINDOWS_X64.zip
+            Release/BUILD_SIZE_REPORT.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
