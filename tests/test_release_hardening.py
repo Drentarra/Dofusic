@@ -81,7 +81,7 @@ def test_release_workflow_is_pinned_and_public_release_has_one_asset():
             if action in expected_pins:
                 assert sha == expected_pins[action]
 
-    publish = next(step for step in final['steps'] if 'gh release create' in step.get('run', ''))
+    publish = next(step for step in final['steps'] if step['name'] == 'Publish GitHub release')
     command = publish['run']
     assert 'Release/Dofusic.zip' in command
     assert 'Dofusic.zip.sha256' not in command
