@@ -10,12 +10,18 @@ from dofusic.vision.layout import estimate_hud_transform, extract_hud_inputs
 from dofusic.vision.combat_shapes import GLYPH_ROWS
 
 
-def collapsed_toolbar(background=(65, 60, 55), foreground=(200, 200, 200)):
+def collapsed_toolbar(background=(65, 60, 55), foreground=(200, 200, 200), *, scenery=(0, 0, 0), neighbour=None):
     """Draw a generic plus using vector lines, independently of glyph masks."""
-    image = np.zeros((105, 360, 3), dtype=np.uint8)
+    image = np.full((105, 360, 3), scenery, dtype=np.uint8)
     image[:37, :37] = background
     cv2.line(image, (12, 18), (25, 18), foreground, 1)
     cv2.line(image, (18, 12), (18, 25), foreground, 1)
+    if neighbour is not None:
+        image[:37, 37:72] = background
+        for y, row in enumerate(GLYPH_ROWS[neighbour]):
+            for column in range(25):
+                if (row >> column) & 1:
+                    image[y + 6, column + 42] = foreground
     return image
 
 
@@ -53,11 +59,31 @@ def test_calibration_uses_toolbar_background_instead_of_scene(scale, scenery):
     assert analyze_combat_toolbar(extract_hud_inputs(image).combat).in_combat is True
 
 
-def test_colored_scene_does_not_turn_unknown_plus_into_combat():
-    image = collapsed_toolbar()
-    image[:, 43:] = (20, 150, 115)
-    image[37:] = (20, 150, 115)
-    assert analyze_combat_toolbar(image[:40, :320]).in_combat is None
+@pytest.mark.parametrize('scale', [0.75, 0.8, 0.9, 1.0, 1.25, 1.5, 2.0])
+@pytest.mark.parametrize('scenery', [(20, 150, 115), (185, 195, 220), (55, 55, 55)])
+def test_collapsed_combat_is_detected_on_colored_scenery(scale, scenery):
+    image = cv2.resize(collapsed_toolbar(scenery=scenery), None, fx=scale, fy=scale)
+    assert analyze_combat_toolbar(extract_hud_inputs(image).combat).in_combat is True
+
+
+@pytest.mark.parametrize('neighbour', ['eye', 'havresac_gear'])
+@pytest.mark.parametrize('scale', [0.75, 0.9, 1.0, 1.25, 1.5, 2.0])
+@pytest.mark.parametrize('scenery', [(0, 0, 0), (20, 150, 115), (185, 195, 220)])
+def test_collapsed_exploration_icons_take_priority_over_plus(neighbour, scale, scenery):
+    image = cv2.resize(collapsed_toolbar(scenery=scenery, neighbour=neighbour), None, fx=scale, fy=scale)
+    assert analyze_combat_toolbar(extract_hud_inputs(image).combat).in_combat is False
+
+
+@pytest.mark.parametrize('neighbour,cover_from', [('eye', 57), ('havresac_gear', 61)])
+def test_partially_covered_exploration_icon_cannot_start_combat(neighbour, cover_from):
+    image = collapsed_toolbar(scenery=(20, 150, 115), neighbour=neighbour)
+    image[:37, cover_from:72] = (95, 85, 80)
+    observation = analyze_combat_toolbar(extract_hud_inputs(image).combat)
+    assert observation.in_combat is None
+    tracker = CombatStateTracker()
+    for _ in range(3):
+        assert tracker.update(observation) is None
+    assert tracker.in_combat is False
 
 
 def test_covered_icon_keeps_expanded_toolbar_unknown_on_colored_scene():
@@ -66,14 +92,15 @@ def test_covered_icon_keeps_expanded_toolbar_unknown_on_colored_scene():
     assert analyze_combat_toolbar(image[:40, :320]).in_combat is None
 
 
-def test_changing_scene_cannot_reuse_collapsed_combat_decision():
+def test_changing_scene_cannot_block_collapsed_combat_decision():
     image = collapsed_toolbar()
     assert analyze_combat_toolbar(image[:40, :320]).in_combat is True
     image[:, 43:] = (20, 150, 115)
-    assert analyze_combat_toolbar(image[:40, :320]).in_combat is None
+    assert analyze_combat_toolbar(image[:40, :320]).in_combat is True
 
 
-def test_colored_scene_combat_changes_music_and_exploration_restores_it(tmp_path):
+@pytest.mark.parametrize('collapsed', [False, True])
+def test_colored_scene_combat_changes_music_and_exploration_restores_it(tmp_path, collapsed):
     import logging
     from dofusic.app import ControllerState, DofusicController
     from dofusic.audio.library import MusicLibrary
@@ -94,6 +121,9 @@ def test_colored_scene_combat_changes_music_and_exploration_restores_it(tmp_path
     controller.player = SimpleNamespace(play=lambda path: played.append(path) or True)
     combat = expanded_toolbar(scenery=(20, 150, 115))[:40, :320]
     normal_hud = expanded_toolbar(combat=False, scenery=(185, 195, 220))[:40, :320]
+    if collapsed:
+        combat = collapsed_toolbar(scenery=(20, 150, 115))[:40, :320]
+        normal_hud = collapsed_toolbar(scenery=(185, 195, 220), neighbour='eye')[:40, :320]
 
     for _ in range(2):
         controller._update_combat_from_toolbar(combat)
@@ -137,9 +167,15 @@ def test_dark_toolbar_still_stops_at_black_scene(scale):
 
 
 @pytest.mark.parametrize('left,right', [(38, 320), (312, 320)])
-def test_panel_beside_plus_is_unknown_even_during_scale_refinement(left, right):
+def test_unrelated_panel_beside_plus_does_not_block_detection(left, right):
     image = collapsed_toolbar()
     image[:37, left:right] = (90, 70, 50)
+    assert analyze_combat_toolbar(extract_hud_inputs(image).combat).in_combat is True
+
+
+def test_covered_plus_cannot_start_combat():
+    image = collapsed_toolbar(scenery=(20, 150, 115))
+    image[:37, :37] = (95, 85, 80)
     assert analyze_combat_toolbar(extract_hud_inputs(image).combat).in_combat is None
 
 

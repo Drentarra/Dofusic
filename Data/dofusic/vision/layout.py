@@ -157,19 +157,24 @@ def estimate_hud_transform(
     contrast = np.abs(colour_probe.astype(np.float32) - background).max(axis=2)
     # A near-black theme is still distinct from the empty black surround even
     # when their channel difference falls inside the rim tolerance.
-    active = (contrast <= 24) & (gray > 8)
-    row_fraction = active.mean(axis=1)
-
-    low_run = 0
     toolbar_end: int | None = None
-    for y in range(origin_y, len(row_fraction)):
-        if row_fraction[y] < 0.20:
-            low_run += 1
-            if low_run >= 3 and y - origin_y >= 20:
-                toolbar_end = y - low_run + 1
-                break
-        else:
-            low_run = 0
+    # If the scene resembles the panel, the broad rim tolerance can follow it
+    # indefinitely. Retry with a tighter relative contrast, without requiring
+    # a particular scenery colour or changing the icon recognition thresholds.
+    for tolerance in (24, 4):
+        active = (contrast <= tolerance) & (gray > 8)
+        row_fraction = active.mean(axis=1)
+        low_run = 0
+        for y in range(origin_y, len(row_fraction)):
+            if row_fraction[y] < 0.20:
+                low_run += 1
+                if low_run >= 3 and y - origin_y >= 20:
+                    toolbar_end = y - low_run + 1
+                    break
+            else:
+                low_run = 0
+        if toolbar_end is not None:
+            break
     if toolbar_end is None:
         return None
 

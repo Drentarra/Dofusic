@@ -71,7 +71,7 @@ def _shape_score(mask: np.ndarray | None, name: str) -> float:
 def _cached_shape_score(pixels: bytes, name: str) -> float:
     # HUD silhouettes usually stay identical between frames even when the map
     # animates. Cache only the binary patch/name, bounded to about 160 KiB of
-    # pixel keys; scenery and visibility decisions are still checked each time.
+    # pixel keys; every frame still extracts the currently visible glyphs.
     mask = np.frombuffer(pixels, dtype=np.uint8).reshape(_GLYPH_SIZE, _GLYPH_SIZE)
     reference = _SHAPES[name]
     # A symmetric overlap prevents a partial icon or arbitrary solid window
@@ -108,10 +108,9 @@ _TOGGLE_OUTLINES = {
 def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = None) -> CombatObservation:
     """Recognize expanded/collapsed combat and exploration toolbar shapes.
 
-    Ambiguous or occluded regions never become a negative combat observation.
-    In particular, a '+' only means combat when the *whole* inspected region
-    beyond it is the empty HUD surround, not when a neighbouring icon failed
-    to match. Havre-Sac and exploration have their own positive shape evidence.
+    A collapsed combat toolbar exposes its '+' control. Exploration and
+    Havre-Sac retain an eye or gear beside it; those shapes take priority.
+    Unrecognized controls remain unknown. Scenery never gates classification.
     """
     geometry = geometry or HUDGeometry()
     unknown = CombatObservation(None, 0.0, 0.0, 0.0, 0.0)
@@ -130,11 +129,8 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
         return observation
     # Measuring a 37-pixel toolbar necessarily rounds its antialiased boundary.
     # Refine only that subpixel scale uncertainty, never the shape thresholds.
-    # Each hypothesis still requires the same complete icon/empty-region proof.
-    # Collapsed-state checks use the original ROI: scale refinement must never
-    # crop away an obstruction off its far edge.
+    # Each hypothesis uses the same icon thresholds.
     candidates = []
-    allow_collapsed_combat = _empty_hud_surround(canonical)
     for factor in (1.01, 1.02, 1.03):
         crop_height = max(1, int(round(height / factor)))
         crop_width = max(1, int(round(width / factor)))
@@ -144,7 +140,7 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
         )
         if refined.ndim == 3:
             refined = refined[:, :, :3]
-        candidate = _classify_toolbar(refined, allow_collapsed_combat=allow_collapsed_combat)
+        candidate = _classify_toolbar(refined)
         if candidate.in_combat is not None:
             candidates.append(candidate)
     if not candidates or len({candidate.in_combat for candidate in candidates}) > 1:
@@ -152,15 +148,7 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
     return max(candidates, key=lambda candidate: candidate.confidence)
 
 
-def _empty_hud_surround(canonical: np.ndarray) -> bool:
-    # Skip the collapsed button's rounded/antialiased outer edge. Count pixels,
-    # not colour channels, allowing only isolated rendering specks.
-    surround = canonical[1:37, 43:]
-    pixels = surround.max(axis=2) if surround.ndim == 3 else surround
-    return float(np.percentile(pixels, 99.8)) <= 8 and int(np.count_nonzero(pixels > 12)) <= 3
-
-
-def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = True) -> CombatObservation:
+def _classify_toolbar(canonical: np.ndarray) -> CombatObservation:
     unknown = CombatObservation(None, 0.0, 0.0, 0.0, 0.0)
     masks = [_glyph_mask(canonical[6:31, x:x + _GLYPH_SIZE]) for x in _GLYPH_X]
     plus = _shape_score(masks[0], 'plus')
@@ -176,14 +164,16 @@ def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = T
     if plus > minus and plus >= 0.72:
         eye = _shape_score(masks[1], 'eye')
         gear = _shape_score(masks[1], 'havresac_gear')
-        if max(eye, gear) >= 0.78:
-            return result(False, min(plus, max(eye, gear)))
-        # Full right-hand area must match the empty surround. Do not infer
-        # combat merely from absent/unrecognizable neighbouring icons.
-        # Scale refinement cannot crop away an obstruction in the original ROI.
-        if allow_collapsed_combat and _empty_hud_surround(canonical):
-            return result(True, plus)
-        return unknown
+        exploration = max(eye, gear)
+        if exploration >= 0.78:
+            return result(False, min(plus, exploration))
+        # A partly visible exploration glyph is ambiguous, not a lone plus.
+        # This guard relies on shape evidence and never inspects scene colour.
+        if exploration >= 0.55:
+            return unknown
+        # In the collapsed combat HUD, the plus is the visible combat control.
+        # Requiring empty/black pixels beside it rejects valid outdoor maps.
+        return result(True, plus)
 
     combat_names = ('combat_eye', 'diamond', 'heart', 'fighter', 'skull')
     scores = [_shape_score(mask, name) for mask, name in zip(masks[1:], combat_names)]
