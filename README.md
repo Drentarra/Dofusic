@@ -84,6 +84,16 @@ Le code source est dans le dossier `Data` et les tests automatisés dans `tests`
 
 Le build portable Windows peut être lancé avec `BUILD_PORTABLE.bat`.
 
+Pour compiler un portable sans le dossier `Musiques` depuis un environnement
+Windows avec les dépendances de build installées :
+
+```powershell
+python Data/tools/build_portable.py --root . --without-music
+```
+
+Les artefacts de la CI utilisent cette option. Replacez votre propre dossier
+`Musiques` à côté de `Dofusic.exe` avant de lancer le programme.
+
 ## À savoir
 
 Dofusic fonctionne actuellement sous **Windows 64 bits**.

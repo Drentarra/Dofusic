@@ -119,12 +119,10 @@ def estimate_hud_transform(
     image: np.ndarray,
     geometry: HUDGeometry | None = None,
 ) -> HUDTransform | None:
-    """Infer HUD scale from the theme-independent toolbar background height.
+    """Infer HUD scale from the first button's own background height.
 
-    The first toolbar row is anchored at the client top-left. Its background is
-    contiguous while the pixels directly below it are black before the zone
-    label starts. Measuring that vertical run is more reliable than scaling from
-    desktop/client resolution and works with the green, purple and Havre-Sac UI.
+    The map may be visible directly below the toolbar. Follow pixels close to
+    the observed button background instead of assuming the scene is black.
     """
     geometry = geometry or HUDGeometry()
     if image is None or getattr(image, 'size', 0) == 0 or image.ndim < 2:
@@ -151,10 +149,21 @@ def estimate_hud_transform(
         return None
     origin_y = int(start_candidates[0])
 
+    # Skip the top border when sampling the panel. A small channel tolerance
+    # covers its rim, antialiasing and translucent theme without following the
+    # map below it. Glyphs occupy only a minority of each probe row.
+    colour_probe = probe[:, :, None] if probe.ndim == 2 else probe[:, :, :3]
+    background = np.median(colour_probe[origin_y + 1:origin_y + 5], axis=(0, 1))
+    contrast = np.abs(colour_probe.astype(np.float32) - background).max(axis=2)
+    # A near-black theme is still distinct from the empty black surround even
+    # when their channel difference falls inside the rim tolerance.
+    active = (contrast <= 24) & (gray > 8)
+    row_fraction = active.mean(axis=1)
+
     low_run = 0
     toolbar_end: int | None = None
     for y in range(origin_y, len(row_fraction)):
-        if row_fraction[y] < 0.08:
+        if row_fraction[y] < 0.20:
             low_run += 1
             if low_run >= 3 and y - origin_y >= 20:
                 toolbar_end = y - low_run + 1
@@ -163,6 +172,14 @@ def estimate_hud_transform(
             low_run = 0
     if toolbar_end is None:
         return None
+
+    # A bright map can make the fractional bottom rim exceed the tolerance a
+    # row early. Retain that row when most of its colour still comes from the
+    # panel, compared with the fully exposed row immediately beneath it.
+    edge_contrast = float(np.median(contrast[toolbar_end]))
+    scene_contrast = float(np.median(contrast[toolbar_end + 1]))
+    if edge_contrast <= scene_contrast * 0.5:
+        toolbar_end += 1
 
     toolbar_height = toolbar_end - origin_y
     if toolbar_height < 18 or toolbar_height > 120:

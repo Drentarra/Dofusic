@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 
 import cv2
 import numpy as np
@@ -63,27 +64,32 @@ def _shape_score(mask: np.ndarray | None, name: str) -> float:
     """Compare binary shapes, tolerating small resampling/position differences."""
     if mask is None:
         return 0.0
+    return _cached_shape_score(mask.tobytes(), name)
+
+
+@lru_cache(maxsize=256)
+def _cached_shape_score(pixels: bytes, name: str) -> float:
+    # HUD silhouettes usually stay identical between frames even when the map
+    # animates. Cache only the binary patch/name, bounded to about 160 KiB of
+    # pixel keys; scenery and visibility decisions are still checked each time.
+    mask = np.frombuffer(pixels, dtype=np.uint8).reshape(_GLYPH_SIZE, _GLYPH_SIZE)
     reference = _SHAPES[name]
     # A symmetric overlap prevents a partial icon or arbitrary solid window
     # from matching just a small fragment of a known glyph.
-    padded = np.pad(mask, 1)
-    best = 0.0
-    for dy in range(3):
-        for dx in range(3):
-            shifted = padded[dy:dy + _GLYPH_SIZE, dx:dx + _GLYPH_SIZE]
-            intersection = float(np.count_nonzero(shifted & reference))
-            denominator = int(shifted.sum()) + int(reference.sum())
-            best = max(best, 2.0 * intersection / max(1, denominator))
-            if name in _TOGGLE_OUTLINES:
-                # The +/- strokes are only 1-2 pixels thick. Antialiasing at
-                # fractional scales changes their area more than their shape.
-                # Symmetric one-pixel coverage tolerates stroke thickness while
-                # still penalizing a missing vertical arm or unrelated pixels.
-                expanded = cv2.dilate(shifted, np.ones((3, 3), dtype=np.uint8))
-                precision = float(np.count_nonzero(shifted & _TOGGLE_OUTLINES[name])) / max(1, int(shifted.sum()))
-                recall = float(np.count_nonzero(reference & expanded)) / max(1, int(reference.sum()))
-                coverage = 2.0 * precision * recall / max(0.001, precision + recall)
-                best = max(best, 0.94 * coverage)
+    shifted = np.lib.stride_tricks.sliding_window_view(np.pad(mask, 1), (_GLYPH_SIZE, _GLYPH_SIZE))
+    areas = np.count_nonzero(shifted, axis=(-2, -1))
+    intersection = np.count_nonzero(shifted & reference, axis=(-2, -1))
+    best = float(np.max(2.0 * intersection / np.maximum(1, areas + _SHAPE_AREAS[name])))
+    if name in _TOGGLE_OUTLINES:
+        # The +/- strokes are only 1-2 pixels thick. Their reference pixels are
+        # well inside the patch, so dilating once before shifting gives the same
+        # coverage as nine per-shift dilations, including at fractional scales.
+        expanded = cv2.dilate(mask, _DILATION_KERNEL)
+        expanded_shifts = np.lib.stride_tricks.sliding_window_view(np.pad(expanded, 1), (_GLYPH_SIZE, _GLYPH_SIZE))
+        precision = np.count_nonzero(shifted & _TOGGLE_OUTLINES[name], axis=(-2, -1)) / np.maximum(1, areas)
+        recall = np.count_nonzero(reference & expanded_shifts, axis=(-2, -1)) / _SHAPE_AREAS[name]
+        coverage = 2.0 * precision * recall / np.maximum(0.001, precision + recall)
+        best = max(best, float(np.max(0.94 * coverage)))
     return best
 
 
@@ -91,8 +97,10 @@ _SHAPES = {
     name: np.array([[(row >> x) & 1 for x in range(_GLYPH_SIZE)] for row in rows], dtype=np.uint8)
     for name, rows in GLYPH_ROWS.items()
 }
+_SHAPE_AREAS = {name: int(np.count_nonzero(shape)) for name, shape in _SHAPES.items()}
+_DILATION_KERNEL = np.ones((3, 3), dtype=np.uint8)
 _TOGGLE_OUTLINES = {
-    name: cv2.dilate(_SHAPES[name], np.ones((3, 3), dtype=np.uint8))
+    name: cv2.dilate(_SHAPES[name], _DILATION_KERNEL)
     for name in ('plus', 'minus')
 }
 
@@ -115,19 +123,16 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
     canonical = cv2.resize(image, (320, 40), interpolation=cv2.INTER_AREA if height >= 40 else cv2.INTER_LINEAR)
     if canonical.ndim == 3:
         canonical = canonical[:, :, :3]
-    # The unobstructed HUD has a quiet dark gap beneath the toolbar. A panel,
-    # tooltip or arbitrary scene covering this gap cannot authorize a decision.
-    separator = canonical[38:40]
-    if float(np.percentile(separator, 95)) > 18:
-        return unknown
+    # The map can be visible beneath this translucent toolbar. Only the icon
+    # silhouettes authorize a decision; the scenery is not occlusion evidence.
     observation = _classify_toolbar(canonical)
     if observation.in_combat is not None:
         return observation
     # Measuring a 37-pixel toolbar necessarily rounds its antialiased boundary.
     # Refine only that subpixel scale uncertainty, never the shape thresholds.
     # Each hypothesis still requires the same complete icon/empty-region proof.
-    # Occlusion checks use the original ROI: resampling can move a legitimate
-    # button rim into the separator, or crop an obstruction off the far edge.
+    # Collapsed-state checks use the original ROI: scale refinement must never
+    # crop away an obstruction off its far edge.
     candidates = []
     allow_collapsed_combat = _empty_hud_surround(canonical)
     for factor in (1.01, 1.02, 1.03):
