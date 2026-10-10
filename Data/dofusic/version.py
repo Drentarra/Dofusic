@@ -1,1 +1,1 @@
-__version__ = "1.0.8-combat-icons"
+__version__ = "1.0.9-adaptive-combat-overlay"

@@ -21,7 +21,7 @@ from dofusic.location.repository import DofusRepository
 from dofusic.location.resolver import LocationResolver
 from dofusic.models import Coordinates, DecisionState, LocationEvidence, LocationRecord, PositionOCRResult, ZoneOCRResult
 from dofusic.text import clean_text
-from dofusic.vision.combat import CombatStateTracker, analyze_combat_toolbar
+from dofusic.vision.combat import CombatObservation, CombatStateTracker, analyze_combat_toolbar
 from dofusic.vision.layout import HUDGeometry, extract_hud_inputs, tracking_screen_rects, zone_crop_has_text
 from dofusic.vision.position_overlay import coordinate_overlay_width
 from dofusic.vision.workers import OCREventKind, OCRWorkerClient
@@ -616,12 +616,12 @@ class DofusicController:
             # Even with no audio file, the UI still has a stable user-facing context.
             self.state.display_theme = location.parent_area_name or location.name
 
-    def _update_combat_from_toolbar(self, toolbar: np.ndarray | None) -> None:
+    def _update_combat_from_toolbar(self, toolbar: np.ndarray | None) -> CombatObservation:
         observation = analyze_combat_toolbar(toolbar, self.hud_geometry)
         self.state.combat_confidence = float(observation.confidence)
         transition = self.combat_tracker.update(observation)
         if transition is None:
-            return
+            return observation
 
         self.state.in_combat = bool(transition)
         label = 'combat' if transition else 'hors combat'
@@ -641,7 +641,7 @@ class DofusicController:
                 self.state.ocr_text,
                 new_generic_cycle=bool(self.state.in_combat),
             )
-            return
+            return observation
         track = self.music_library.resolve(
             None,
             combat=self.state.in_combat,
@@ -649,6 +649,7 @@ class DofusicController:
         )
         status = 'Combat détecté' if self.state.in_combat else 'Fin du combat'
         self._play_track(track, status=status)
+        return observation
 
     def _mark_unknown(self, now: float, reason: str) -> None:
         self.state.decision_state = DecisionState.UNKNOWN.value
@@ -1004,8 +1005,9 @@ class DofusicController:
             frame.image, self.hud_geometry,
             transform=getattr(frame, 'hud_transform', None),
         )
+        combat_observation = None
         if self.automatic_detection_unlocked:
-            self._update_combat_from_toolbar(hud.combat)
+            combat_observation = self._update_combat_from_toolbar(hud.combat)
 
         # Only a genuinely visible capture is allowed to drive the screen overlay.
         # PrintWindow is useful for OCR recovery but would let an overlay appear on
@@ -1016,6 +1018,7 @@ class DofusicController:
                 capture_image_shape=frame.image.shape,
                 hud=hud,
                 geometry=self.hud_geometry,
+                combat_bounds=combat_observation.icon_rect if combat_observation is not None else None,
             )
             self.state.overlay_hwnd = int(frame.hwnd)
             self.state.combat_overlay_rect = rects.combat

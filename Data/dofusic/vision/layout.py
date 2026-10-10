@@ -61,7 +61,6 @@ class HUDGeometry:
         (81, 3, 36, 34),
         (120, 3, 36, 34),
     )
-    combat_button_visual_rect: tuple[int, int, int, int] = (4, 4, 29, 29)
 
     zone_x: int = 0
     zone_y: int = 40
@@ -109,11 +108,6 @@ class HUDGeometry:
     def combat_button_reference_rect(self, index: int = 0) -> tuple[int, int, int, int]:
         x, y, width, height = self.combat_button_rects[int(index)]
         return self.combat_x + x, self.combat_y + y, width, height
-
-    def combat_button_visual_reference_rect(self) -> tuple[int, int, int, int]:
-        x, y, width, height = self.combat_button_visual_rect
-        return self.combat_x + x, self.combat_y + y, width, height
-
 
 def estimate_hud_transform(
     image: np.ndarray,
@@ -216,7 +210,7 @@ class HUDInputs:
 
 @dataclass(frozen=True, slots=True)
 class HUDTrackingRects:
-    combat: tuple[int, int, int, int]
+    combat: tuple[int, int, int, int] | None
     zone: tuple[int, int, int, int]
     position: tuple[int, int, int, int]
 
@@ -227,8 +221,9 @@ def tracking_screen_rects(
     capture_image_shape: tuple[int, ...],
     hud: HUDInputs,
     geometry: HUDGeometry | None = None,
+    combat_bounds: tuple[int, int, int, int] | None = None,
 ) -> HUDTrackingRects:
-    """Map the exact OCR inputs back using the same runtime HUD transform."""
+    """Map OCR inputs and currently recognized icons using one HUD transform."""
     geometry = geometry or HUDGeometry()
     if len(capture_image_shape) < 2:
         raise ValueError('capture_image_shape invalide')
@@ -241,16 +236,6 @@ def tracking_screen_rects(
     sy_screen = float(screen_h) / float(image_h)
     transform = hud.transform
 
-    def map_reference_rect(ref_x: int, ref_y: int, ref_width: int, ref_height: int) -> tuple[int, int, int, int]:
-        px, py = transform.point(ref_x, ref_y)
-        pw, ph = transform.size(ref_width, ref_height)
-        return (
-            left + int(round(px * sx_screen)),
-            top + int(round(py * sy_screen)),
-            max(1, int(round(pw * sx_screen))),
-            max(1, int(round(ph * sy_screen))),
-        )
-
     def map_crop(ref_x: int, ref_y: int, crop: np.ndarray) -> tuple[int, int, int, int]:
         crop_h, crop_w = crop.shape[:2]
         px, py = transform.point(ref_x, ref_y)
@@ -261,9 +246,18 @@ def tracking_screen_rects(
             max(1, int(round(crop_h * sy_screen))),
         )
 
-    combat_x, combat_y, combat_width, combat_height = geometry.combat_button_visual_reference_rect()
+    combat_rect = None
+    if combat_bounds is not None:
+        x, y, width, height = combat_bounds
+        origin_x, origin_y = transform.point(geometry.combat_x, geometry.combat_y)
+        combat_rect = (
+            left + int(round((origin_x + x) * sx_screen)),
+            top + int(round((origin_y + y) * sy_screen)),
+            max(1, int(round(width * sx_screen))),
+            max(1, int(round(height * sy_screen))),
+        )
     return HUDTrackingRects(
-        combat=map_reference_rect(combat_x, combat_y, combat_width, combat_height),
+        combat=combat_rect,
         zone=map_crop(geometry.zone_x, geometry.zone_y, hud.zone),
         position=map_crop(geometry.position_x, geometry.position_y, hud.position),
     )

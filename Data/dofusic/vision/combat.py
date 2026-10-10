@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
+from math import ceil
 
 import cv2
 import numpy as np
@@ -24,6 +25,9 @@ class CombatObservation:
     luminance_ratio: float
     first_peak: float
     reference_peak: float
+    # Bounds of the glyphs used for this observation, in input ROI pixels.
+    # Unknown observations do not claim a recognized outline.
+    icon_rect: tuple[int, int, int, int] | None = None
 
 
 # The new toolbar has a +/- control followed by 34-pixel icon slots.
@@ -126,7 +130,7 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
     # silhouettes authorize a decision; the scenery is not occlusion evidence.
     observation = _classify_toolbar(canonical)
     if observation.in_combat is not None:
-        return observation
+        return _capture_pixel_bounds(observation, width, height)
     # Measuring a 37-pixel toolbar necessarily rounds its antialiased boundary.
     # Refine only that subpixel scale uncertainty, never the shape thresholds.
     # Each hypothesis uses the same icon thresholds.
@@ -142,10 +146,20 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
             refined = refined[:, :, :3]
         candidate = _classify_toolbar(refined)
         if candidate.in_combat is not None:
-            candidates.append(candidate)
+            candidates.append(_capture_pixel_bounds(candidate, crop_width, crop_height))
     if not candidates or len({candidate.in_combat for candidate in candidates}) > 1:
         return unknown
     return max(candidates, key=lambda candidate: candidate.confidence)
+
+
+def _capture_pixel_bounds(observation: CombatObservation, width: int, height: int) -> CombatObservation:
+    """Undo only the classifier's normalization, including scale refinement."""
+    if observation.icon_rect is None:
+        return observation
+    x, y, w, h = observation.icon_rect
+    left, top = int(x * width / 320), int(y * height / 40)
+    right, bottom = min(width, ceil((x + w) * width / 320)), min(height, ceil((y + h) * height / 40))
+    return replace(observation, icon_rect=(left, top, right - left, bottom - top))
 
 
 def _classify_toolbar(canonical: np.ndarray) -> CombatObservation:
@@ -156,30 +170,41 @@ def _classify_toolbar(canonical: np.ndarray) -> CombatObservation:
     if max(plus, minus) < 0.72:
         return unknown
 
-    def result(state: bool, score: float) -> CombatObservation:
+    def result(state: bool, score: float, indices: tuple[int, ...]) -> CombatObservation:
+        # The diagnostic outline follows the same glyph masks that authorized
+        # the decision. Include a small margin without extending over scenery.
+        boxes = []
+        for index in indices:
+            x, y, w, h = cv2.boundingRect(masks[index])
+            boxes.append((_GLYPH_X[index] + x, 6 + y, w, h))
+        left = max(0, min(x for x, y, w, h in boxes) - 2)
+        top = max(0, min(y for x, y, w, h in boxes) - 2)
+        right = min(320, max(x + w for x, y, w, h in boxes) + 2)
+        bottom = min(40, max(y + h for x, y, w, h in boxes) + 2)
         # Historical scalar fields are retained for controller/log compatibility;
         # shape similarity replaces the old luminance ratio diagnostic.
-        return CombatObservation(state, min(1.0, score), score, 0.0, 0.0)
+        return CombatObservation(state, min(1.0, score), score, 0.0, 0.0,
+                                 (left, top, right - left, bottom - top))
 
     if plus > minus and plus >= 0.72:
         eye = _shape_score(masks[1], 'eye')
         gear = _shape_score(masks[1], 'havresac_gear')
         exploration = max(eye, gear)
         if exploration >= 0.78:
-            return result(False, min(plus, exploration))
+            return result(False, min(plus, exploration), (0, 1))
         # A partly visible exploration glyph is ambiguous, not a lone plus.
         # This guard relies on shape evidence and never inspects scene colour.
         if exploration >= 0.55:
             return unknown
         # In the collapsed combat HUD, the plus is the visible combat control.
         # Requiring empty/black pixels beside it rejects valid outdoor maps.
-        return result(True, plus)
+        return result(True, plus, (0,))
 
     combat_names = ('combat_eye', 'diamond', 'heart', 'fighter', 'skull')
     scores = [_shape_score(mask, name) for mask, name in zip(masks[1:], combat_names)]
     # Require every icon plus the +/- control; hiding a subset is unknown.
     if min(scores) >= 0.72 and float(np.mean(scores)) >= 0.80:
-        return result(True, min(minus, float(np.mean(scores))))
+        return result(True, min(minus, float(np.mean(scores))), (0, 1, 2, 3, 4, 5))
     sword = _shape_score(masks[1], 'sword')
     dots = _shape_score(masks[2], 'dots')
     info = _shape_score(masks[3], 'info')
@@ -187,9 +212,9 @@ def _classify_toolbar(canonical: np.ndarray) -> CombatObservation:
     havre_dots = _shape_score(masks[1], 'dots')
     havre_info = _shape_score(masks[2], 'info')
     if min(sword, dots, info) >= 0.75:
-        return result(False, min(minus, sword, dots, info))
+        return result(False, min(minus, sword, dots, info), (0, 1, 2, 3))
     if min(havre_dots, havre_info) >= 0.78:
-        return result(False, min(minus, havre_dots, havre_info))
+        return result(False, min(minus, havre_dots, havre_info), (0, 1, 2))
     return unknown
 
 
