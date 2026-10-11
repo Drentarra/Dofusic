@@ -156,6 +156,7 @@ class DofusicController:
         self.last_capture_seen_at = 0.0
         self.unknown_since: float | None = None
         self.current_location: LocationRecord | None = None
+        self._confirmed_zone_text = ''
         self.last_evidence: LocationEvidence | None = None
         self.last_position_at = 0.0
         self.last_reliable_position: Coordinates | None = None
@@ -245,6 +246,7 @@ class DofusicController:
         self.next_confirmation_at = 0.0
         self.unknown_since = None
         self.current_location = None
+        self._confirmed_zone_text = ''
         self.last_evidence = None
         self.last_position_at = 0.0
         self.last_reliable_position = None
@@ -638,7 +640,7 @@ class DofusicController:
             # exploration choice that was active before combat.
             self._play_location(
                 self.current_location,
-                self.state.ocr_text,
+                getattr(self, '_confirmed_zone_text', '') or self.current_location.name,
                 new_generic_cycle=bool(self.state.in_combat),
             )
             return observation
@@ -775,6 +777,7 @@ class DofusicController:
             self.next_confirmation_at = 0.0
             previous_location = self.current_location
             self.current_location = decision.location
+            self._confirmed_zone_text = result.text
             self.state.location = decision.location.name
             self.state.location_key = decision.location.canonical_key
             if coordinates is not None:

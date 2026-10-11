@@ -126,6 +126,34 @@ def test_every_bundled_expedition_inherits_its_dungeon_catalog_entry():
         assert 'Minotot' in catalog.audio_aliases(minotot)
 
 
+def test_combat_transition_cannot_use_unconfirmed_ocr_text_for_dungeon_music(tmp_path):
+    import logging
+    from dofusic.app import ControllerState, DofusicController
+    from dofusic.vision.combat import CombatStateTracker
+    from test_combat_shapes import collapsed_toolbar
+
+    location = LocationRecord(1, 'Donjon du Test', LocationKind.SUBAREA)
+    normal = tmp_path / 'Donjon du Test.opus'
+    normal.touch()
+    (tmp_path / 'Montagne interminable.opus').touch()
+    controller = DofusicController.__new__(DofusicController)
+    controller.state = ControllerState()
+    controller.current_location = location
+    controller._confirmed_zone_text = location.name
+    controller.state.ocr_text = 'Montagne interminable'  # A pending/rejected OCR observation.
+    controller.hud_geometry = None
+    controller.combat_tracker = CombatStateTracker()
+    controller.logger = logging.getLogger('music-audit')
+    controller._game_process_running = True
+    controller.music_library = MusicLibrary(SimpleNamespace(all_locations=lambda: (location,)), tmp_path)
+    played = []
+    controller.player = SimpleNamespace(play=lambda path: played.append(path) or True)
+    for _ in range(3):
+        controller._update_combat_from_toolbar(collapsed_toolbar()[:40, :320])
+    assert controller.state.in_combat
+    assert played == [normal]
+
+
 @pytest.mark.parametrize('rejection', ['confidence', 'score', 'margin', 'future'])
 def test_rejected_location_observation_cannot_confirm_next_acceptable_one(rejection):
     from dataclasses import replace
