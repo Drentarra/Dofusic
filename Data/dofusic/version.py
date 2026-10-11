@@ -1,1 +1,1 @@
-__version__ = "1.0.2-combat-shapes"
+__version__ = "1.0.10-detection-music-audit"

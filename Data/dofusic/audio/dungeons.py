@@ -8,7 +8,7 @@ from dofusic.models import LocationKind, LocationRecord
 from dofusic.text import match_key
 
 _DUNGEON_PREFIX_RE = re.compile(r"^\s*donjon\s+(?:de\s+la|des|du|de|d[\'’])\s+(.+?)\s*$", re.IGNORECASE)
-_EXPEDITION_PREFIX_RE = re.compile(r"^\s*expédition(?:\s+de\s+l[\'’](?:audace|bravoure))?\s*-\s*(.+?)\s*$", re.IGNORECASE)
+_EXPEDITION_PREFIX_RE = re.compile(r"^\s*expédition(?:\s+de\s+(?:l[\'’]audace|la\s+bravoure))?\s*-\s*(.+?)\s*$", re.IGNORECASE)
 
 
 class DungeonCatalog:
@@ -43,7 +43,14 @@ class DungeonCatalog:
             if isinstance(bosses, str):
                 bosses = (bosses,)
             bosses_clean = tuple(str(value).strip() for value in bosses if str(value).strip()) if isinstance(bosses, (list, tuple)) else tuple()
-            self._entries[match_key(name)] = (name, bosses_clean)
+            entry = (name, bosses_clean)
+            self._entries[match_key(name)] = entry
+            aliases = row.get('aliases', ())
+            if isinstance(aliases, (list, tuple)):
+                for alias in aliases:
+                    alias_key = match_key(alias)
+                    if alias_key:
+                        self._entries[alias_key] = entry
 
     @staticmethod
     def base_location_name(name: str) -> str:

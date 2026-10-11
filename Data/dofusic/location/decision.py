@@ -47,7 +47,14 @@ class DecisionEngine:
             # observations. Any different/unknown location breaks the streak.
             if old.top1 is None or old.top1.location.canonical_key != key:
                 break
-            if evidence.timestamp - old.timestamp > self.confirmation_max_gap_sec:
+            # Rejected observations remain diagnostic history, never votes.
+            if old.ocr_confidence < self.min_confidence:
+                break
+            if old.top1.mode is MatchMode.FUZZY and old.top1.score < self.min_fuzzy_score:
+                break
+            if old.top2 is not None and old.margin < self.min_margin:
+                break
+            if not 0.0 <= evidence.timestamp - old.timestamp <= self.confirmation_max_gap_sec:
                 break
             same += 1
             previous = normalize_text(old.raw_zone_text)

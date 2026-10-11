@@ -252,7 +252,7 @@ def overlay_local_rects(rects: tuple[Rect, ...], bounds: Rect) -> tuple[Rect, ..
 
 
 def build_tracking_outline_mask(
-    combat_rect: Rect,
+    combat_rect: Rect | None,
     zone_rect: Rect,
     position_rect: Rect,
     bounds: Rect,
@@ -262,7 +262,7 @@ def build_tracking_outline_mask(
 ) -> Image.Image:
     """Render all tracking contours on one transparent-overlay mask.
 
-    The combat button is a separate rounded rectangle. Zone and position keep
+    Recognized combat icons have a separate rounded rectangle. Zone and position keep
     their historical merged contour so the overlapping OCR slots never show an
     artificial horizontal separator.
     """
@@ -273,6 +273,8 @@ def build_tracking_outline_mask(
         radius=radius,
         line_width=line_width,
     )
+    if combat_rect is None:
+        return mask
     left, top, _width, _height = (int(v) for v in bounds)
     x, y, width, height = (int(v) for v in combat_rect)
     if width <= 0 or height <= 0:
@@ -299,7 +301,7 @@ class _OverlayWindow:
     native_hwnd: int | None = None
     visible: bool = False
     geometry: Rect | None = None
-    drawn_rects: tuple[Rect, Rect, Rect] | None = None
+    drawn_rects: tuple[Rect | None, Rect, Rect] | None = None
     image_ref: object | None = None
     capture_excluded: bool = False
     last_exclusion_attempt_at: float = 0.0
@@ -448,7 +450,7 @@ class TrackingOverlay:
     def _draw_tracking_outline(
         cls,
         canvas: tk.Canvas,
-        combat_rect: Rect,
+        combat_rect: Rect | None,
         zone_rect: Rect,
         position_rect: Rect,
         *,
@@ -472,7 +474,7 @@ class TrackingOverlay:
 
     def _place(
         self,
-        combat_rect: Rect,
+        combat_rect: Rect | None,
         zone_rect: Rect,
         position_rect: Rect,
         zone_key: str | None = None,
@@ -482,10 +484,14 @@ class TrackingOverlay:
         if window is None:
             return
 
-        screen_rects = (combat_rect, zone_rect, position_rect)
+        screen_rects = (zone_rect, position_rect)
+        if combat_rect is not None:
+            screen_rects = (combat_rect, *screen_rects)
         geometry = overlay_bounds(*screen_rects, pad=self.PAD)
         left, top, width, height = geometry
-        local_rects = overlay_local_rects(screen_rects, geometry)
+        local_zone, local_position = overlay_local_rects((zone_rect, position_rect), geometry)
+        local_combat = overlay_local_rects((combat_rect,), geometry)[0] if combat_rect is not None else None
+        local_rects = (local_combat, local_zone, local_position)
         old_geometry = window.geometry
         geometry_changed = old_geometry != geometry
         size_changed = old_geometry is None or old_geometry[2:] != geometry[2:]
@@ -527,7 +533,6 @@ class TrackingOverlay:
         if (
             not self.enabled
             or not hwnd
-            or combat_rect is None
             or zone_rect is None
             or position_rect is None
         ):

@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from dofusic.vision.glyphs import _glyph_mask, _shape_score
+
 
 @dataclass(frozen=True, slots=True)
 class HUDTransform:
@@ -61,7 +63,6 @@ class HUDGeometry:
         (81, 3, 36, 34),
         (120, 3, 36, 34),
     )
-    combat_button_visual_rect: tuple[int, int, int, int] = (4, 4, 29, 29)
 
     zone_x: int = 0
     zone_y: int = 40
@@ -110,28 +111,91 @@ class HUDGeometry:
         x, y, width, height = self.combat_button_rects[int(index)]
         return self.combat_x + x, self.combat_y + y, width, height
 
-    def combat_button_visual_reference_rect(self) -> tuple[int, int, int, int]:
-        x, y, width, height = self.combat_button_visual_rect
-        return self.combat_x + x, self.combat_y + y, width, height
-
-
 def estimate_hud_transform(
     image: np.ndarray,
     geometry: HUDGeometry | None = None,
 ) -> HUDTransform | None:
-    """Infer HUD scale from the theme-independent toolbar background height.
+    """Validate panel geometry against its +/- silhouette, independent of scene."""
+    geometry = geometry or HUDGeometry()
+    proposals = _panel_hud_transforms(image, geometry)
 
-    The first toolbar row is anchored at the client top-left. Its background is
-    contiguous while the pixels directly below it are black before the zone
-    label starts. Measuring that vertical run is more reliable than scaling from
-    desktop/client resolution and works with the green, purple and Havre-Sac UI.
+    def control_score(transform: HUDTransform) -> float:
+        x, y = transform.point(6, 6)
+        width, height = transform.size(25, 25)
+        patch = image[y:y + height, x:x + width]
+        if patch.shape[:2] != (height, width):
+            return 0.0
+        patch = cv2.resize(patch, (25, 25), interpolation=cv2.INTER_AREA if height >= 25 else cv2.INTER_LINEAR)
+        if patch.ndim == 3:
+            patch = patch[:, :, :3]
+        mask = _glyph_mask(patch)
+        return max(_shape_score(mask, 'plus'), _shape_score(mask, 'minus'))
+
+    scored = [(control_score(transform), transform) for transform in proposals]
+    if scored and max(score for score, _ in scored) >= 0.78:
+        return max(scored, key=lambda item: item[0])[1]
+    if image is None or getattr(image, 'size', 0) == 0 or image.ndim not in (2, 3):
+        return proposals[0] if proposals else None
+
+    # When the scene has the panel's colour, there is no panel boundary. Derive
+    # a few scale hypotheses from foreground components near the first control,
+    # then validate them with the same silhouettes. No full-frame scale sweep.
+    probe = image[:120, :120]
+    if probe.ndim == 2:
+        probe = probe[:, :, None]
+    else:
+        probe = probe[:, :, :3]
+    background = np.median(probe[:3, :8], axis=(0, 1))
+    contrast = np.abs(probe.astype(np.float32) - background).max(axis=2)
+    # Candidate extraction must not borrow its threshold from scene pixels.
+    # Shape validation below still applies the local glyph contrast threshold.
+    mask = (contrast > 4.0).astype(np.uint8)
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    components = []
+    for index in range(1, count):
+        x, y, width, height, area = stats[index]
+        if area < 8 or x < 2 or y < 2 or width > 65 or height > 65:
+            continue
+        cx, cy = centroids[index]
+        if cx > 65 or cy > 65:
+            continue
+        components.append((cx + cy, cx, cy))
+    for _, cx, _ in sorted(components)[:2]:
+        # Both controls are centred at reference x=18 (pixel centre 18.5).
+        # Position is a stronger scale anchor than stroke thickness, which
+        # changes with antialiasing and differs between plus and minus.
+        centre_scale = float((cx + 0.5) / 18.5)
+        if 0.35 <= centre_scale <= 3.0:
+            transform = HUDTransform(scale=centre_scale)
+            score = control_score(transform)
+            if score >= 0.78:
+                return transform
+            for offset in (-0.02, -0.01, 0.01, 0.02):
+                scale = centre_scale + offset
+                if 0.35 <= scale <= 3.0:
+                    transform = HUDTransform(scale=scale)
+                    scored.append((control_score(transform), transform))
+    if scored and max(score for score, _ in scored) >= 0.78:
+        return max(scored, key=lambda item: item[0])[1]
+    # OCR can still use the ordinary panel estimate when a window hides glyphs.
+    return proposals[0] if proposals else None
+
+
+def _panel_hud_transforms(
+    image: np.ndarray,
+    geometry: HUDGeometry,
+) -> tuple[HUDTransform, ...]:
+    """Infer HUD scale from the first button's own background height.
+
+    The map may be visible directly below the toolbar. Follow pixels close to
+    the observed button background instead of assuming the scene is black.
     """
     geometry = geometry or HUDGeometry()
     if image is None or getattr(image, 'size', 0) == 0 or image.ndim < 2:
-        return None
+        return ()
     h, w = image.shape[:2]
     if h < 24 or w < 48:
-        return None
+        return ()
 
     probe_h = min(h, max(96, geometry.bootstrap_capture_height))
     # A collapsed combat toolbar is only one +/- button wide. Probing the
@@ -148,37 +212,53 @@ def estimate_hud_transform(
     row_fraction = active.mean(axis=1)
     start_candidates = np.flatnonzero(row_fraction[: min(12, len(row_fraction))] > 0.20)
     if start_candidates.size == 0:
-        return None
+        return ()
     origin_y = int(start_candidates[0])
 
-    low_run = 0
-    toolbar_end: int | None = None
-    for y in range(origin_y, len(row_fraction)):
-        if row_fraction[y] < 0.08:
-            low_run += 1
-            if low_run >= 3 and y - origin_y >= 20:
-                toolbar_end = y - low_run + 1
-                break
-        else:
-            low_run = 0
-    if toolbar_end is None:
-        return None
-
-    toolbar_height = toolbar_end - origin_y
-    if toolbar_height < 18 or toolbar_height > 120:
-        return None
-
-    # Find only the left edge; horizontal toolbar extent is intentionally ignored
-    # because Havre-Sac appends extra controls to the same row.
-    top_band = active[origin_y:toolbar_end, : min(w, 80)]
-    col_fraction = top_band.mean(axis=0) if top_band.size else np.empty((0,))
-    x_candidates = np.flatnonzero(col_fraction > 0.20)
-    origin_x = int(x_candidates[0]) if x_candidates.size else 0
-
-    scale = float(toolbar_height) / float(geometry.toolbar_reference_height)
-    if not 0.35 <= scale <= 3.0:
-        return None
-    return HUDTransform(scale=scale, origin_x=origin_x, origin_y=origin_y)
+    # Skip the top border when sampling the panel. A small channel tolerance
+    # covers its rim, antialiasing and translucent theme without following the
+    # map below it. Glyphs occupy only a minority of each probe row.
+    colour_probe = probe[:, :, None] if probe.ndim == 2 else probe[:, :, :3]
+    background = np.median(colour_probe[origin_y + 1:origin_y + 5], axis=(0, 1))
+    contrast = np.abs(colour_probe.astype(np.float32) - background).max(axis=2)
+    # A near-black theme is still distinct from the empty black surround even
+    # when their channel difference falls inside the rim tolerance.
+    proposals = []
+    # If the scene resembles the panel, the broad rim tolerance can follow it
+    # indefinitely. Retry with a tighter relative contrast, without requiring
+    # a particular scenery colour or changing the icon recognition thresholds.
+    for tolerance in (24, 4):
+        toolbar_end: int | None = None
+        active = (contrast <= tolerance) & (gray > 8)
+        row_fraction = active.mean(axis=1)
+        low_run = 0
+        for y in range(origin_y, len(row_fraction)):
+            if row_fraction[y] < 0.20:
+                low_run += 1
+                if low_run >= 3 and y - origin_y >= 20:
+                    toolbar_end = y - low_run + 1
+                    break
+            else:
+                low_run = 0
+        if toolbar_end is None:
+            continue
+        edge_contrast = float(np.median(contrast[toolbar_end]))
+        scene_contrast = float(np.median(contrast[toolbar_end + 1]))
+        if edge_contrast <= scene_contrast * 0.5:
+            toolbar_end += 1
+        toolbar_height = toolbar_end - origin_y
+        if not 18 <= toolbar_height <= 120:
+            continue
+        top_band = active[origin_y:toolbar_end]
+        col_fraction = top_band.mean(axis=0) if top_band.size else np.empty((0,))
+        x_candidates = np.flatnonzero(col_fraction > 0.20)
+        origin_x = int(x_candidates[0]) if x_candidates.size else 0
+        scale = float(toolbar_height) / float(geometry.toolbar_reference_height)
+        if 0.35 <= scale <= 3.0:
+            transform = HUDTransform(scale=scale, origin_x=origin_x, origin_y=origin_y)
+            if transform not in proposals:
+                proposals.append(transform)
+    return tuple(proposals)
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,7 +274,7 @@ class HUDInputs:
 
 @dataclass(frozen=True, slots=True)
 class HUDTrackingRects:
-    combat: tuple[int, int, int, int]
+    combat: tuple[int, int, int, int] | None
     zone: tuple[int, int, int, int]
     position: tuple[int, int, int, int]
 
@@ -205,8 +285,9 @@ def tracking_screen_rects(
     capture_image_shape: tuple[int, ...],
     hud: HUDInputs,
     geometry: HUDGeometry | None = None,
+    combat_bounds: tuple[int, int, int, int] | None = None,
 ) -> HUDTrackingRects:
-    """Map the exact OCR inputs back using the same runtime HUD transform."""
+    """Map OCR inputs and currently recognized icons using one HUD transform."""
     geometry = geometry or HUDGeometry()
     if len(capture_image_shape) < 2:
         raise ValueError('capture_image_shape invalide')
@@ -219,16 +300,6 @@ def tracking_screen_rects(
     sy_screen = float(screen_h) / float(image_h)
     transform = hud.transform
 
-    def map_reference_rect(ref_x: int, ref_y: int, ref_width: int, ref_height: int) -> tuple[int, int, int, int]:
-        px, py = transform.point(ref_x, ref_y)
-        pw, ph = transform.size(ref_width, ref_height)
-        return (
-            left + int(round(px * sx_screen)),
-            top + int(round(py * sy_screen)),
-            max(1, int(round(pw * sx_screen))),
-            max(1, int(round(ph * sy_screen))),
-        )
-
     def map_crop(ref_x: int, ref_y: int, crop: np.ndarray) -> tuple[int, int, int, int]:
         crop_h, crop_w = crop.shape[:2]
         px, py = transform.point(ref_x, ref_y)
@@ -239,9 +310,18 @@ def tracking_screen_rects(
             max(1, int(round(crop_h * sy_screen))),
         )
 
-    combat_x, combat_y, combat_width, combat_height = geometry.combat_button_visual_reference_rect()
+    combat_rect = None
+    if combat_bounds is not None:
+        x, y, width, height = combat_bounds
+        origin_x, origin_y = transform.point(geometry.combat_x, geometry.combat_y)
+        combat_rect = (
+            left + int(round((origin_x + x) * sx_screen)),
+            top + int(round((origin_y + y) * sy_screen)),
+            max(1, int(round(width * sx_screen))),
+            max(1, int(round(height * sy_screen))),
+        )
     return HUDTrackingRects(
-        combat=map_reference_rect(combat_x, combat_y, combat_width, combat_height),
+        combat=combat_rect,
         zone=map_crop(geometry.zone_x, geometry.zone_y, hud.zone),
         position=map_crop(geometry.position_x, geometry.position_y, hud.position),
     )
