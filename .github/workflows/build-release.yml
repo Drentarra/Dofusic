@@ -9,6 +9,8 @@ on:
         default: ''
         type: string
   push:
+    branches:
+      - "release/v*"
     tags:
       - "v*"
 
@@ -29,21 +31,26 @@ jobs:
 
     steps:
       - name: Validate requested release tag
-        if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+        if: (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || startsWith(github.ref, 'refs/heads/release/')
         shell: python
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_REF: ${{ github.ref }}
         run: |
           import os
           import re
-          if not re.fullmatch(r'v[A-Za-z0-9][A-Za-z0-9._-]*', os.environ['RELEASE_TAG']):
+          tag = os.environ['RELEASE_TAG']
+          ref = os.environ.get('RELEASE_REF', '')
+          if ref.startswith('refs/heads/release/'):
+              tag = ref.removeprefix('refs/heads/release/')
+          if not re.fullmatch(r'v[A-Za-z0-9][A-Za-z0-9._-]*', tag):
               raise ValueError('Expected a release tag such as v1.0.6')
 
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
 
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -68,7 +75,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python Data/tools/build_portable.py --root .
+          python Data/tools/build_portable.py --root . --without-music
 
       - name: Prepare public ZIP
         shell: pwsh
@@ -104,7 +111,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.sha }}
 
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -132,7 +139,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python .github/scripts/verify_release.py final Release/Dofusic.zip Release/Dofusic.zip.sha256
+          python .github/scripts/verify_release.py final Release/Dofusic.zip Release/Dofusic.zip.sha256 --without-music
           if (-not (Test-Path -LiteralPath "Release/BUILD_SIZE_REPORT.txt" -PathType Leaf)) { throw "Build size report missing" }
 
       - name: Generate and validate installed build environment SBOM
@@ -147,8 +154,56 @@ jobs:
           & ./.sbom-venv/Scripts/python.exe -m cyclonedx_py environment $buildPython --output-reproducible --spec-version 1.6 --output-format JSON --output-file Release/Dofusic.sbom.json
           python .github/scripts/verify_release.py sbom Release/Dofusic.sbom.json Data/requirements-lock.txt
 
+      - name: Bind release branch tag to built source
+        if: startsWith(github.ref, 'refs/heads/release/')
+        shell: python
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_REF: ${{ github.ref }}
+        run: |
+          import json
+          import os
+          import re
+          import subprocess
+          from urllib.error import HTTPError
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+
+          repo = os.environ['GH_REPO']
+          tag = os.environ['RELEASE_REF'].removeprefix('refs/heads/release/')
+          if not re.fullmatch(r'v[A-Za-z0-9][A-Za-z0-9._-]*', tag):
+              raise ValueError('Expected a release tag such as v1.0.10')
+          source_sha = subprocess.run(
+              ['git', 'rev-parse', 'HEAD'], check=True, capture_output=True, text=True,
+          ).stdout.strip()
+          request = Request(
+              f'https://api.github.com/repos/{repo}/git/ref/tags/{quote(tag, safe="")}',
+              headers={
+                  'Authorization': f'Bearer {os.environ["GH_TOKEN"]}',
+                  'Accept': 'application/vnd.github+json',
+                  'X-GitHub-Api-Version': '2022-11-28',
+                  'User-Agent': 'Dofusic-release-workflow',
+              },
+          )
+          try:
+              with urlopen(request, timeout=30) as response:
+                  existing = json.load(response)['object']
+          except HTTPError as error:
+              if error.code != 404:
+                  raise
+              existing = None
+
+          if existing is None:
+              subprocess.run([
+                  'gh', 'api', f'repos/{repo}/git/refs', '--method', 'POST',
+                  '-f', f'ref=refs/tags/{tag}', '-f', f'sha={source_sha}',
+              ], check=True)
+          elif existing.get('type') != 'commit' or existing.get('sha') != source_sha:
+              raise ValueError('Release tag points to different source')
+
       - name: Attest final public ZIP
-        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || startsWith(github.ref, 'refs/heads/release/')
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: Release/Dofusic.zip
@@ -157,7 +212,7 @@ jobs:
       - name: Upload verification artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Dofusic-Windows-x64-${{ inputs.release_tag || github.ref_name }}
+          name: Dofusic-Windows-x64-${{ github.run_id }}
           path: |
             Release/Dofusic.zip
             Release/Dofusic.zip.sha256
@@ -168,12 +223,13 @@ jobs:
           retention-days: 30
 
       - name: Publish GitHub release
-        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || startsWith(github.ref, 'refs/heads/release/')
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_REF: ${{ github.ref }}
         run: |
           import os
           import subprocess
@@ -183,6 +239,9 @@ jobs:
 
           repo = os.environ['GH_REPO']
           tag = os.environ['RELEASE_TAG']
+          ref = os.environ.get('RELEASE_REF', '')
+          if ref.startswith('refs/heads/release/'):
+              tag = ref.removeprefix('refs/heads/release/')
           request = Request(
               f'https://api.github.com/repos/{repo}/releases/tags/{quote(tag, safe="")}',
               headers={
@@ -210,8 +269,14 @@ jobs:
                   '--draft=false', '--latest',
               ], check=True)
           else:
+              notes = (
+                  'Portable Windows compilé, testé et attesté par GitHub Actions.\n\n'
+                  f'- [Code source de cette version](https://github.com/{repo}/tree/{tag})\n'
+                  f'- [Compilation GitHub Actions](https://github.com/{repo}/actions/runs/{os.environ["GITHUB_RUN_ID"]})\n\n'
+                  'Archive sans le dossier Musiques. Placez votre dossier Musiques à côté de Dofusic.exe.'
+              )
               subprocess.run([
                   'gh', 'release', 'create', tag, '--repo', repo, '--verify-tag',
-                  '--title', f'Dofusic {tag}', '--generate-notes', '--latest',
+                  '--title', f'Dofusic {tag}', '--notes', notes, '--generate-notes', '--latest',
                   'Release/Dofusic.zip',
               ], check=True)

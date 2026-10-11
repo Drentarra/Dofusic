@@ -24,6 +24,7 @@ def _publish(monkeypatch, *, status=200, upload_fails=False):
     monkeypatch.setenv('GH_REPO', 'Drentarra/Dofusic')
     monkeypatch.setenv('GH_TOKEN', 'test-token')
     monkeypatch.setenv('RELEASE_TAG', 'v1.0.6')
+    monkeypatch.setenv('GITHUB_RUN_ID', '123456')
 
     def read_release(request, **kwargs):
         assert request.full_url == 'https://api.github.com/repos/Drentarra/Dofusic/releases/tags/v1.0.6'
@@ -66,6 +67,74 @@ def test_absent_release_is_created_with_only_the_portable_zip(monkeypatch):
     assert '--generate-notes' in command
     assert command.count('Release/Dofusic.zip') == 1
     assert not any(arg.endswith(('.sha256', '.json', '.txt')) for arg in command)
+
+
+def test_new_release_notes_link_source_tag_and_actual_actions_run(monkeypatch):
+    code, calls = _publish(monkeypatch, status=404)
+    exec(compile(code, '<publication-step>', 'exec'), {})
+    command = calls[0]
+    assert '--notes' in command
+    notes = command[command.index('--notes') + 1]
+    assert 'https://github.com/Drentarra/Dofusic/tree/v1.0.6' in notes
+    assert 'https://github.com/Drentarra/Dofusic/actions/runs/123456' in notes
+    assert 'sans' in notes and 'Musiques' in notes
+
+
+def test_release_branch_publishes_its_version_tag(monkeypatch):
+    code, calls = _publish(monkeypatch, status=404)
+    monkeypatch.setenv('RELEASE_TAG', 'release/v1.0.6')
+    monkeypatch.setenv('RELEASE_REF', 'refs/heads/release/v1.0.6')
+    exec(compile(code, '<publication-step>', 'exec'), {})
+    assert calls[0][:4] == ['gh', 'release', 'create', 'v1.0.6']
+
+
+@pytest.mark.parametrize('existing_sha', [None, 'a' * 40, 'b' * 40])
+def test_release_branch_tag_is_bound_to_checked_out_source(monkeypatch, existing_sha):
+    import urllib.request
+
+    monkeypatch.setenv('GH_REPO', 'Drentarra/Dofusic')
+    monkeypatch.setenv('GH_TOKEN', 'test-token')
+    monkeypatch.setenv('RELEASE_REF', 'refs/heads/release/v1.0.10')
+    source_sha = 'a' * 40
+    calls = []
+
+    def read_tag(request, **kwargs):
+        assert request.full_url.endswith('/git/ref/tags/v1.0.10')
+        if existing_sha is None:
+            raise HTTPError(request.full_url, 404, 'Not Found', {}, None)
+        return io.BytesIO(json.dumps({'object': {'type': 'commit', 'sha': existing_sha}}).encode())
+
+    def run(command, **kwargs):
+        assert kwargs.get('check') is True
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout=source_sha + '\n')
+
+    monkeypatch.setattr(urllib.request, 'urlopen', read_tag)
+    monkeypatch.setattr(subprocess, 'run', run)
+    step = next((s for s in _workflow()['jobs']['release-windows']['steps'] if s['name'] == 'Bind release branch tag to built source'), None)
+    assert step is not None
+    if existing_sha not in (None, source_sha):
+        with pytest.raises(ValueError, match='different source'):
+            exec(compile(step['run'], '<tag-step>', 'exec'), {})
+        assert not any(c[:2] == ['gh', 'api'] for c in calls)
+    else:
+        exec(compile(step['run'], '<tag-step>', 'exec'), {})
+        api_calls = [c for c in calls if c[:2] == ['gh', 'api']]
+        assert len(api_calls) == (1 if existing_sha is None else 0)
+        if api_calls:
+            assert 'ref=refs/tags/v1.0.10' in api_calls[0]
+            assert f'sha={source_sha}' in api_calls[0]
+
+
+def test_release_branch_trigger_and_checkout_pin_build_source():
+    workflow = _workflow()
+    assert workflow['on']['push'].get('branches') == ['release/v*']
+    for job in workflow['jobs'].values():
+        checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout@'))
+        assert checkout['with']['ref'].endswith('|| github.sha }}')
+    for name in ('Attest final public ZIP', 'Publish GitHub release'):
+        step = next(s for s in workflow['jobs']['release-windows']['steps'] if s['name'] == name)
+        assert "startsWith(github.ref, 'refs/heads/release/')" in step['if']
 
 
 @pytest.mark.parametrize('status', [401, 403, 429, 500])
