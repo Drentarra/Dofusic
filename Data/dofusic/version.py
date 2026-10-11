@@ -1,1 +1,1 @@
-__version__ = "1.0.9-adaptive-combat-overlay"
+__version__ = "1.0.10-detection-music-audit"

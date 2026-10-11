@@ -33,22 +33,30 @@ class CaptureService:
         self._backend_factory = backend_factory
         self._period = 1.0 / max(1, int(fps))
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest: CaptureSnapshot | None = None
         self._sequence = 0
+        self._restart_requested = False
 
     @property
     def alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
     def start(self) -> None:
-        if self.alive:
-            return
-        self._stop.clear()
-        thread = threading.Thread(target=self._run, name='DofusicCapture', daemon=True)
-        self._thread = thread
-        thread.start()
+        with self._lifecycle_lock:
+            if self.alive:
+                # A blocked capture still owns its backend. Resume on this
+                # same thread only after it returns and closes that backend.
+                if self._stop.is_set():
+                    self._restart_requested = True
+                return
+            self._restart_requested = False
+            self._stop.clear()
+            thread = threading.Thread(target=self._run, name='DofusicCapture', daemon=True)
+            self._thread = thread
+            thread.start()
 
     def _publish(self, frame: CapturedFrame | None, captured_at: float, error: str = '') -> None:
         with self._lock:
@@ -56,6 +64,17 @@ class CaptureService:
             self._latest = CaptureSnapshot(self._sequence, frame, float(captured_at), error)
 
     def _run(self) -> None:
+        while True:
+            self._run_backend()
+            with self._lifecycle_lock:
+                if self._restart_requested:
+                    self._restart_requested = False
+                    self._stop.clear()
+                    continue
+                self._thread = None
+                return
+
+    def _run_backend(self) -> None:
         backend: CaptureBackend | None = None
         try:
             backend = self._backend_factory()
@@ -63,7 +82,8 @@ class CaptureService:
                 cycle_started = time.monotonic()
                 try:
                     frame = backend.capture()
-                    self._publish(frame, time.monotonic())
+                    if not self._stop.is_set():
+                        self._publish(frame, time.monotonic())
                 except Exception as exc:
                     self._publish(None, time.monotonic(), f'{type(exc).__name__}: {exc}')
                 remaining = self._period - (time.monotonic() - cycle_started)
@@ -87,11 +107,12 @@ class CaptureService:
         return snapshot
 
     def close(self, *, timeout: float = 1.5) -> None:
-        self._stop.set()
-        thread = self._thread
+        with self._lifecycle_lock:
+            self._restart_requested = False
+            self._stop.set()
+            thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(0.0, float(timeout)))
-        self._thread = None
 
 
 class DirectCaptureService:

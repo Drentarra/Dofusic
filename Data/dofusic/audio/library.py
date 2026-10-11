@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections import OrderedDict
 from pathlib import Path
 import random
 import re
@@ -8,16 +9,17 @@ import re
 from dofusic.audio.dungeons import DungeonCatalog
 from dofusic.location.repository import DofusRepository
 from dofusic.models import LocationKind, LocationRecord
-from dofusic.text import TextMatchMode, match_key, norm_key, text_similarity
+from dofusic.text import TextMatchMode, match_key, norm_key, normalize_text, text_similarity
 
 AUDIO_EXTS = {
     '.mp3', '.mp2', '.ogg', '.oga', '.opus', '.wav', '.flac', '.m4a', '.aac', '.wma',
     '.webm', '.mka', '.mp4', '.aiff', '.aif', '.ac3', '.ape', '.wv', '.tta', '.amr', '.caf',
 }
 _COMBAT_STEM = 'Musique Combat'
-_COMBAT_PREFIX_KEY = norm_key(_COMBAT_STEM)
+_COMBAT_PREFIX_KEY = normalize_text(_COMBAT_STEM)
 _GENERIC_NORMAL_RE = re.compile(r'^\s*musique\s*\d*\s*$', re.IGNORECASE)
 _GENERIC_COMBAT_RE = re.compile(r'^\s*musique\s+combat\s*\d*\s*$', re.IGNORECASE)
+_RESOLUTION_CACHE_SIZE = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,7 @@ class MusicLibrary:
         self.ambiguous_track_keys: set[str] = set()
         self._named_tracks: dict[str, tuple[Path, ...]] = {}
         self._ambiguity_cache: dict[str, bool] = {}
+        self._resolution_cache: OrderedDict[tuple[tuple[str, ...], float, float], Path | None] = OrderedDict()
         # Generic music is a playback-session choice, not a geography cache.
         # A choice stays stable while the current exploration/combat cycle is
         # active and rotates only when the controller explicitly starts a new
@@ -94,7 +97,7 @@ class MusicLibrary:
 
             # Combat tracks are a separate deterministic namespace. They must
             # never win ordinary fuzzy location matching while out of combat.
-            stem_key = norm_key(path.stem)
+            stem_key = normalize_text(path.stem)
             if stem_key == _COMBAT_PREFIX_KEY or stem_key.startswith(_COMBAT_PREFIX_KEY + ' '):
                 continue
             found.append(path)
@@ -116,6 +119,7 @@ class MusicLibrary:
         # need the expensive geography check.
         self.ambiguous_track_keys.clear()
         self._ambiguity_cache.clear()
+        self._resolution_cache.clear()
 
     @staticmethod
     def _score_track(path: Path, anchors: tuple[str, ...]) -> _TrackScore:
@@ -155,6 +159,19 @@ class MusicLibrary:
         return any(strict_track == norm_key(anchor) for anchor in anchors if anchor)
 
     def _best_track(self, anchors: tuple[str, ...]) -> Path | None:
+        # Cache only deterministic filename matching, including misses. Random
+        # session choices remain outside this bounded, inventory-scoped cache.
+        key = (anchors, self.fuzzy_min, self.fuzzy_margin)
+        if key in self._resolution_cache:
+            self._resolution_cache.move_to_end(key)
+            return self._resolution_cache[key]
+        result = self._find_best_track(anchors)
+        self._resolution_cache[key] = result
+        if len(self._resolution_cache) > _RESOLUTION_CACHE_SIZE:
+            self._resolution_cache.popitem(last=False)
+        return result
+
+    def _find_best_track(self, anchors: tuple[str, ...]) -> Path | None:
         if not self.tracks:
             return None
 
@@ -290,7 +307,7 @@ class MusicLibrary:
             specific_combat = self._dungeon_combat_track(location)
             if specific_combat is not None:
                 return specific_combat
-            return self._resolve_normal(location, raw_text, new_generic_cycle=new_generic_cycle)
+            return self._resolve_normal(location, raw_text)
 
         # Combat names are deterministic rather than fuzzy: a file called
         # "Musique Combat Astrub" can never collide with ordinary "Astrub".
@@ -303,7 +320,8 @@ class MusicLibrary:
         generic_combat = self._choose_generic(combat=True, new_cycle=new_generic_cycle)
         if generic_combat is not None:
             return generic_combat
-        return self._choose_generic(combat=False, new_cycle=new_generic_cycle)
+        # Without combat audio, keep the existing exploration cycle intact.
+        return self._choose_generic(combat=False)
 
     def report(self) -> dict[str, object]:
         return {

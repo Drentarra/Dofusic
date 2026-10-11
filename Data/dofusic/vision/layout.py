@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from dofusic.vision.glyphs import _glyph_mask, _shape_score
+
 
 @dataclass(frozen=True, slots=True)
 class HUDTransform:
@@ -113,6 +115,76 @@ def estimate_hud_transform(
     image: np.ndarray,
     geometry: HUDGeometry | None = None,
 ) -> HUDTransform | None:
+    """Validate panel geometry against its +/- silhouette, independent of scene."""
+    geometry = geometry or HUDGeometry()
+    proposals = _panel_hud_transforms(image, geometry)
+
+    def control_score(transform: HUDTransform) -> float:
+        x, y = transform.point(6, 6)
+        width, height = transform.size(25, 25)
+        patch = image[y:y + height, x:x + width]
+        if patch.shape[:2] != (height, width):
+            return 0.0
+        patch = cv2.resize(patch, (25, 25), interpolation=cv2.INTER_AREA if height >= 25 else cv2.INTER_LINEAR)
+        if patch.ndim == 3:
+            patch = patch[:, :, :3]
+        mask = _glyph_mask(patch)
+        return max(_shape_score(mask, 'plus'), _shape_score(mask, 'minus'))
+
+    scored = [(control_score(transform), transform) for transform in proposals]
+    if scored and max(score for score, _ in scored) >= 0.78:
+        return max(scored, key=lambda item: item[0])[1]
+    if image is None or getattr(image, 'size', 0) == 0 or image.ndim not in (2, 3):
+        return proposals[0] if proposals else None
+
+    # When the scene has the panel's colour, there is no panel boundary. Derive
+    # a few scale hypotheses from foreground components near the first control,
+    # then validate them with the same silhouettes. No full-frame scale sweep.
+    probe = image[:120, :120]
+    if probe.ndim == 2:
+        probe = probe[:, :, None]
+    else:
+        probe = probe[:, :, :3]
+    background = np.median(probe[:3, :8], axis=(0, 1))
+    contrast = np.abs(probe.astype(np.float32) - background).max(axis=2)
+    # Candidate extraction must not borrow its threshold from scene pixels.
+    # Shape validation below still applies the local glyph contrast threshold.
+    mask = (contrast > 4.0).astype(np.uint8)
+    count, _, stats, centroids = cv2.connectedComponentsWithStats(mask)
+    components = []
+    for index in range(1, count):
+        x, y, width, height, area = stats[index]
+        if area < 8 or x < 2 or y < 2 or width > 65 or height > 65:
+            continue
+        cx, cy = centroids[index]
+        if cx > 65 or cy > 65:
+            continue
+        components.append((cx + cy, cx, cy))
+    for _, cx, _ in sorted(components)[:2]:
+        # Both controls are centred at reference x=18 (pixel centre 18.5).
+        # Position is a stronger scale anchor than stroke thickness, which
+        # changes with antialiasing and differs between plus and minus.
+        centre_scale = float((cx + 0.5) / 18.5)
+        if 0.35 <= centre_scale <= 3.0:
+            transform = HUDTransform(scale=centre_scale)
+            score = control_score(transform)
+            if score >= 0.78:
+                return transform
+            for offset in (-0.02, -0.01, 0.01, 0.02):
+                scale = centre_scale + offset
+                if 0.35 <= scale <= 3.0:
+                    transform = HUDTransform(scale=scale)
+                    scored.append((control_score(transform), transform))
+    if scored and max(score for score, _ in scored) >= 0.78:
+        return max(scored, key=lambda item: item[0])[1]
+    # OCR can still use the ordinary panel estimate when a window hides glyphs.
+    return proposals[0] if proposals else None
+
+
+def _panel_hud_transforms(
+    image: np.ndarray,
+    geometry: HUDGeometry,
+) -> tuple[HUDTransform, ...]:
     """Infer HUD scale from the first button's own background height.
 
     The map may be visible directly below the toolbar. Follow pixels close to
@@ -120,10 +192,10 @@ def estimate_hud_transform(
     """
     geometry = geometry or HUDGeometry()
     if image is None or getattr(image, 'size', 0) == 0 or image.ndim < 2:
-        return None
+        return ()
     h, w = image.shape[:2]
     if h < 24 or w < 48:
-        return None
+        return ()
 
     probe_h = min(h, max(96, geometry.bootstrap_capture_height))
     # A collapsed combat toolbar is only one +/- button wide. Probing the
@@ -140,7 +212,7 @@ def estimate_hud_transform(
     row_fraction = active.mean(axis=1)
     start_candidates = np.flatnonzero(row_fraction[: min(12, len(row_fraction))] > 0.20)
     if start_candidates.size == 0:
-        return None
+        return ()
     origin_y = int(start_candidates[0])
 
     # Skip the top border when sampling the panel. A small channel tolerance
@@ -151,11 +223,12 @@ def estimate_hud_transform(
     contrast = np.abs(colour_probe.astype(np.float32) - background).max(axis=2)
     # A near-black theme is still distinct from the empty black surround even
     # when their channel difference falls inside the rim tolerance.
-    toolbar_end: int | None = None
+    proposals = []
     # If the scene resembles the panel, the broad rim tolerance can follow it
     # indefinitely. Retry with a tighter relative contrast, without requiring
     # a particular scenery colour or changing the icon recognition thresholds.
     for tolerance in (24, 4):
+        toolbar_end: int | None = None
         active = (contrast <= tolerance) & (gray > 8)
         row_fraction = active.mean(axis=1)
         low_run = 0
@@ -167,34 +240,25 @@ def estimate_hud_transform(
                     break
             else:
                 low_run = 0
-        if toolbar_end is not None:
-            break
-    if toolbar_end is None:
-        return None
-
-    # A bright map can make the fractional bottom rim exceed the tolerance a
-    # row early. Retain that row when most of its colour still comes from the
-    # panel, compared with the fully exposed row immediately beneath it.
-    edge_contrast = float(np.median(contrast[toolbar_end]))
-    scene_contrast = float(np.median(contrast[toolbar_end + 1]))
-    if edge_contrast <= scene_contrast * 0.5:
-        toolbar_end += 1
-
-    toolbar_height = toolbar_end - origin_y
-    if toolbar_height < 18 or toolbar_height > 120:
-        return None
-
-    # Find only the left edge; horizontal toolbar extent is intentionally ignored
-    # because Havre-Sac appends extra controls to the same row.
-    top_band = active[origin_y:toolbar_end, : min(w, 80)]
-    col_fraction = top_band.mean(axis=0) if top_band.size else np.empty((0,))
-    x_candidates = np.flatnonzero(col_fraction > 0.20)
-    origin_x = int(x_candidates[0]) if x_candidates.size else 0
-
-    scale = float(toolbar_height) / float(geometry.toolbar_reference_height)
-    if not 0.35 <= scale <= 3.0:
-        return None
-    return HUDTransform(scale=scale, origin_x=origin_x, origin_y=origin_y)
+        if toolbar_end is None:
+            continue
+        edge_contrast = float(np.median(contrast[toolbar_end]))
+        scene_contrast = float(np.median(contrast[toolbar_end + 1]))
+        if edge_contrast <= scene_contrast * 0.5:
+            toolbar_end += 1
+        toolbar_height = toolbar_end - origin_y
+        if not 18 <= toolbar_height <= 120:
+            continue
+        top_band = active[origin_y:toolbar_end]
+        col_fraction = top_band.mean(axis=0) if top_band.size else np.empty((0,))
+        x_candidates = np.flatnonzero(col_fraction > 0.20)
+        origin_x = int(x_candidates[0]) if x_candidates.size else 0
+        scale = float(toolbar_height) / float(geometry.toolbar_reference_height)
+        if 0.35 <= scale <= 3.0:
+            transform = HUDTransform(scale=scale, origin_x=origin_x, origin_y=origin_y)
+            if transform not in proposals:
+                proposals.append(transform)
+    return tuple(proposals)
 
 
 @dataclass(frozen=True, slots=True)
