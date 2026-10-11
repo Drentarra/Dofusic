@@ -77,7 +77,36 @@ def test_new_release_notes_link_source_tag_and_actual_actions_run(monkeypatch):
     notes = command[command.index('--notes') + 1]
     assert 'https://github.com/Drentarra/Dofusic/tree/v1.0.6' in notes
     assert 'https://github.com/Drentarra/Dofusic/actions/runs/123456' in notes
-    assert 'sans' in notes and 'Musiques' in notes
+    assert 'Musiques inclus' in notes
+
+
+def test_rebuild_branch_updates_existing_release_with_complete_zip_and_new_build_link(monkeypatch):
+    code, calls = _publish(monkeypatch)
+    monkeypatch.setenv('RELEASE_TAG', 'rebuild/v1.0.6')
+    monkeypatch.setenv('RELEASE_REF', 'refs/heads/rebuild/v1.0.6')
+    exec(compile(code, '<publication-step>', 'exec'), {})
+    assert calls[0][:4] == ['gh', 'release', 'upload', 'v1.0.6']
+    notes = calls[1][calls[1].index('--notes') + 1]
+    assert 'Musiques inclus' in notes
+    assert 'https://github.com/Drentarra/Dofusic/tree/v1.0.6' in notes
+    assert 'https://github.com/Drentarra/Dofusic/actions/runs/123456' in notes
+
+
+def test_rebuild_resolves_existing_source_tag_and_pins_verification_to_built_commit(monkeypatch, tmp_path):
+    workflow = _workflow()
+    assert 'rebuild/v*' in workflow['on']['push']['branches']
+    build = workflow['jobs']['build-windows']
+    resolve = next(s for s in build['steps'] if s['name'] == 'Validate requested release tag')
+    output = tmp_path / 'outputs'
+    monkeypatch.setenv('GITHUB_OUTPUT', str(output))
+    monkeypatch.setenv('RELEASE_TAG', '')
+    monkeypatch.setenv('RELEASE_REF', 'refs/heads/rebuild/v1.0.10')
+    monkeypatch.setenv('SOURCE_SHA', 'a' * 40)
+    exec(compile(resolve['run'], '<source-resolution>', 'exec'), {})
+    assert 'source_ref=refs/tags/v1.0.10' in output.read_text()
+    assert 'release_tag=v1.0.10' in output.read_text()
+    checkout = next(s for s in workflow['jobs']['release-windows']['steps'] if s.get('uses', '').startswith('actions/checkout@'))
+    assert 'needs.build-windows.outputs.source_sha' in checkout['with']['ref']
 
 
 def test_release_branch_publishes_its_version_tag(monkeypatch):
@@ -128,10 +157,10 @@ def test_release_branch_tag_is_bound_to_checked_out_source(monkeypatch, existing
 
 def test_release_branch_trigger_and_checkout_pin_build_source():
     workflow = _workflow()
-    assert workflow['on']['push'].get('branches') == ['release/v*']
-    for job in workflow['jobs'].values():
-        checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout@'))
-        assert checkout['with']['ref'].endswith('|| github.sha }}')
+    assert 'release/v*' in workflow['on']['push']['branches']
+    build = workflow['jobs']['build-windows']
+    checkout = next(s for s in build['steps'] if s.get('uses', '').startswith('actions/checkout@'))
+    assert 'steps.release.outputs.source_ref' in checkout['with']['ref']
     for name in ('Attest final public ZIP', 'Publish GitHub release'):
         step = next(s for s in workflow['jobs']['release-windows']['steps'] if s['name'] == name)
         assert "startsWith(github.ref, 'refs/heads/release/')" in step['if']
@@ -158,9 +187,8 @@ def test_manual_recovery_builds_the_tag_and_keeps_attestation(monkeypatch):
     assert workflow['on']['workflow_dispatch']['inputs']['release_tag']['default'] == ''
     build = workflow['jobs']['build-windows']
     final = workflow['jobs']['release-windows']
-    for job in (build, final):
-        checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout@'))
-        assert "format('refs/tags/{0}', inputs.release_tag)" in checkout['with']['ref']
+    resolve = next(s for s in build['steps'] if s['name'] == 'Validate requested release tag')
+    assert "source_ref = f'refs/tags/{tag}'" in resolve['run']
     attest = next(s for s in final['steps'] if s['name'] == 'Attest final public ZIP')
     publish = next(s for s in final['steps'] if 'RELEASE_TAG' in s.get('env', {}))
     assert attest['if'] == publish['if']
@@ -171,8 +199,10 @@ def test_manual_recovery_builds_the_tag_and_keeps_attestation(monkeypatch):
 
 
 @pytest.mark.parametrize('tag', ['v1.0.6', 'v1.0.7-rc.1'])
-def test_valid_manual_tag_is_accepted(monkeypatch, tag):
+def test_valid_manual_tag_is_accepted(monkeypatch, tmp_path, tag):
     monkeypatch.setenv('RELEASE_TAG', tag)
+    monkeypatch.setenv('GITHUB_OUTPUT', str(tmp_path / 'outputs'))
+    monkeypatch.setenv('SOURCE_SHA', 'a' * 40)
     step = next(s for s in _workflow()['jobs']['build-windows']['steps'] if s['name'] == 'Validate requested release tag')
     exec(compile(step['run'], '<tag-validation>', 'exec'), {})
 
@@ -180,6 +210,7 @@ def test_valid_manual_tag_is_accepted(monkeypatch, tag):
 @pytest.mark.parametrize('tag', ['main', '../v1.0.6', 'v1.0.6\nother', 'v1.0.6;echo x'])
 def test_invalid_manual_tag_is_rejected(monkeypatch, tag):
     monkeypatch.setenv('RELEASE_TAG', tag)
+    monkeypatch.setenv('SOURCE_SHA', 'a' * 40)
     step = next(s for s in _workflow()['jobs']['build-windows']['steps'] if s['name'] == 'Validate requested release tag')
     with pytest.raises((ValueError, SystemExit)):
         exec(compile(step['run'], '<tag-validation>', 'exec'), {})

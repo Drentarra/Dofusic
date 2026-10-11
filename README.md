@@ -46,9 +46,10 @@ Dofusic est portable :
 
 1. Téléchargez `Dofusic.zip` dans **Releases**.
 2. Décompressez l'archive.
-3. Placez votre dossier `Musiques` à côté de `Dofusic.exe` : il n'est pas inclus dans le ZIP.
-4. Lancez `Dofusic.exe`.
-5. Lancez Dofus.
+3. Lancez `Dofusic.exe`.
+4. Lancez Dofus.
+
+Le dossier `Musiques` est inclus dans le ZIP, à côté de `Dofusic.exe`.
 
 Il n'y a rien à installer.
 

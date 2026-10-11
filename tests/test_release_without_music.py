@@ -33,9 +33,9 @@ def test_music_free_release_rejects_accidentally_bundled_music(tmp_path, music_e
     assert not checksum.exists()
 
 
-def test_public_release_build_and_verification_agree_on_music_free_zip():
+def test_public_release_build_and_verification_include_music():
     workflow = _workflow('build-release.yml')
     build = next(step for step in workflow['jobs']['build-windows']['steps'] if step['name'] == 'Build and test portable version')
     verify = next(step for step in workflow['jobs']['release-windows']['steps'] if step['name'] == 'Verify final public ZIP and compute SHA256')
-    assert '--without-music' in build['run']
-    assert '--without-music' in verify['run']
+    assert '--without-music' not in build['run']
+    assert '--without-music' not in verify['run']
