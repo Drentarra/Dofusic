@@ -120,6 +120,27 @@ def test_startup_gate_runs_only_position_ocr_until_first_valid_coordinates(monke
     assert len(combat_calls) == 1
 
 
+def test_controller_reuses_capture_calibration_for_ocr_crops(monkeypatch):
+    from dofusic.vision.layout import HUDGeometry, HUDTransform, extract_hud_inputs
+
+    controller, _ = _tick_controller(monkeypatch)
+    controller.hud_geometry = HUDGeometry()
+    frame = CapturedFrame(
+        image=np.zeros((160, 600, 3), dtype=np.uint8),
+        source='printwindow', hwnd=123,
+        hud_transform=HUDTransform(scale=1.5),
+    )
+    controller.capture_service = SimpleNamespace(
+        latest=lambda _sequence, now: CaptureSnapshot(1, frame, now),
+    )
+    monkeypatch.setattr(app_module, 'extract_hud_inputs', extract_hud_inputs)
+
+    controller.tick(now=10.0)
+
+    submitted, _ = controller.position_worker.calls[0]
+    assert submitted.shape[:2] == (44, 270)
+
+
 def test_first_valid_position_unlocks_automatic_detection_permanently():
     controller = DofusicController.__new__(DofusicController)
     controller._automatic_detection_unlocked = False

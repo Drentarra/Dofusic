@@ -49,11 +49,13 @@ Dofusic est portable :
 3. Lancez `Dofusic.exe`.
 4. Lancez Dofus.
 
+Le dossier `Musiques` est inclus dans le ZIP, à côté de `Dofusic.exe`.
+
 Il n'y a rien à installer.
 
 Évitez simplement de déplacer ou supprimer les fichiers présents dans `Data`.
 
-Les releases officielles sont construites par GitHub Actions. Les utilisateurs avancés peuvent vérifier la provenance du ZIP avec :
+Les releases officielles sont construites par GitHub Actions. Chaque nouvelle release contient les liens vers le code source de son tag et la compilation qui a produit le ZIP. Les utilisateurs avancés peuvent vérifier la provenance du ZIP avec :
 
 ```powershell
 gh attestation verify Dofusic.zip --repo Drentarra/Dofusic
@@ -83,6 +85,16 @@ Les réglages sont conservés entre les lancements.
 Le code source est dans le dossier `Data` et les tests automatisés dans `tests`.
 
 Le build portable Windows peut être lancé avec `BUILD_PORTABLE.bat`.
+
+Pour compiler un portable sans le dossier `Musiques` depuis un environnement
+Windows avec les dépendances de build installées :
+
+```powershell
+python Data/tools/build_portable.py --root . --without-music
+```
+
+Les artefacts de la CI utilisent cette option. Replacez votre propre dossier
+`Musiques` à côté de `Dofusic.exe` avant de lancer le programme.
 
 ## À savoir
 

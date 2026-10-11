@@ -103,14 +103,15 @@ def validate_source(root: Path, data_dir: Path) -> None:
     (root / 'Musiques').mkdir(parents=True, exist_ok=True)
 
 
-def validate_release(release_dir: Path) -> None:
+def validate_release(release_dir: Path, *, include_music: bool = True) -> None:
+    if not include_music and (release_dir / 'Musiques').exists():
+        raise BuildError('Le portable sans musiques contient encore le dossier Musiques.')
     data_dir = release_dir / 'Data'
     _check_no_opencv_duplicate(data_dir)
     _check_removed_runtime_artifacts(data_dir)
     _check_large_duplicate_files(data_dir)
     required = (
         release_dir / 'Dofusic.exe',
-        release_dir / 'Musiques',
         data_dir / 'dofus_data.sqlite',
         data_dir / 'place_aliases.json',
         data_dir / 'dungeons.json',
@@ -123,6 +124,8 @@ def validate_release(release_dir: Path) -> None:
         data_dir / 'PRIVACY.md',
         data_dir / 'THIRD_PARTY_NOTICES.md',
     )
+    if include_music:
+        required += (release_dir / 'Musiques',)
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         raise BuildError('Release incomplète:\n- ' + '\n- '.join(missing))
@@ -274,7 +277,7 @@ def _make_zip(release_dir: Path, zip_path: Path) -> None:
                 archive.write(path, relative)
 
 
-def build(root: Path) -> Path:
+def build(root: Path, *, include_music: bool = True) -> Path:
     root = root.resolve()
     data_dir = root / 'Data'
     release_root = root / 'Release'
@@ -305,8 +308,9 @@ def build(root: Path) -> Path:
         timeout=900,
     )
 
-    _copy_music_library(root / 'Musiques', release_dir / 'Musiques')
-    validate_release(release_dir)
+    if include_music:
+        _copy_music_library(root / 'Musiques', release_dir / 'Musiques')
+    validate_release(release_dir, include_music=include_music)
 
     exe = release_dir / 'Dofusic.exe'
     _run('Auto-test du programme compilé', [str(exe), '--self-test'], cwd=release_dir, timeout=180)
@@ -324,9 +328,10 @@ def build(root: Path) -> Path:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument('--root', type=Path, default=Path(__file__).resolve().parents[2])
+    parser.add_argument('--without-music', action='store_true', help='Construire le portable sans le dossier Musiques')
     args = parser.parse_args()
     try:
-        build(args.root)
+        build(args.root, include_music=not args.without_music)
     except (BuildError, subprocess.TimeoutExpired) as exc:
         print(f'[ERREUR] {exc}', file=sys.stderr)
         raise SystemExit(1) from exc

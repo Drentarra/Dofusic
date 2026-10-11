@@ -13,7 +13,7 @@ import zipfile
 DOS_NAMES = {'CON', 'PRN', 'AUX', 'NUL', *(f'{prefix}{i}' for prefix in ('COM', 'LPT') for i in ('1', '2', '3', '4', '5', '6', '7', '8', '9', '\u00b9', '\u00b2', '\u00b3'))}
 
 
-def _validated_entries(archive, kind):
+def _validated_entries(archive, kind, *, include_music=True):
     """Validate raw paths and Windows aliases, including implicit directories."""
     seen, spellings, files = {}, {}, []
     for item in archive.infolist():
@@ -33,7 +33,7 @@ def _validated_entries(archive, kind):
             allowed = parts[0] == 'Dofusic' and (
                 (len(parts) == 1 and item.is_dir()) or
                 (len(parts) == 2 and parts[1] == 'Dofusic.exe' and not item.is_dir()) or
-                (len(parts) >= 2 and parts[1] in {'Data', 'Musiques'} and (len(parts) > 2 or item.is_dir()))
+                (len(parts) >= 2 and parts[1] in ({'Data', 'Musiques'} if include_music else {'Data'}) and (len(parts) > 2 or item.is_dir()))
             )
         if not allowed:
             raise ValueError(f'Unexpected ZIP root/layout: {name!r}')
@@ -57,7 +57,10 @@ def _validated_entries(archive, kind):
         if not files or sum(item.file_size for item in files) == 0:
             raise ValueError('Music ZIP is empty')
     else:
-        for prefix in ('Dofusic/Dofusic.exe', 'Dofusic/Data/', 'Dofusic/Musiques/'):
+        required = ('Dofusic/Dofusic.exe', 'Dofusic/Data/')
+        if include_music:
+            required += ('Dofusic/Musiques/',)
+        for prefix in required:
             selected = [item for item in files if item.orig_filename == prefix or item.orig_filename.startswith(prefix)]
             if not selected or sum(item.file_size for item in selected) == 0:
                 raise ValueError(f'Final ZIP required content is empty or absent: {prefix}')
@@ -88,12 +91,12 @@ def extract_music(source, expected_sha256, destination):
     return {'sha256': digest, 'file_count': len(files)}
 
 
-def finalize_release(source, checksum):
+def finalize_release(source, checksum, *, include_music=True):
     """Validate the final ZIP and hash the same opened file, without extraction."""
     source = Path(source)
     with source.open('rb') as stream:
         with zipfile.ZipFile(stream) as archive:
-            files = _validated_entries(archive, 'final')
+            files = _validated_entries(archive, 'final', include_music=include_music)
         stream.seek(0)
         digest = hashlib.file_digest(stream, 'sha256').hexdigest()
     Path(checksum).write_text(f'{digest}  {source.name}\n', encoding='ascii', newline='\n')
@@ -167,6 +170,7 @@ def main():
     final = commands.add_parser('final')
     final.add_argument('source', type=Path)
     final.add_argument('checksum', type=Path)
+    final.add_argument('--without-music', action='store_true')
     signed = commands.add_parser('signed')
     signed.add_argument('unsigned_source', type=Path)
     signed.add_argument('signed_source', type=Path)
@@ -178,7 +182,7 @@ def main():
     if args.command == 'music':
         result = extract_music(args.source, args.sha256, args.destination)
     elif args.command == 'final':
-        result = finalize_release(args.source, args.checksum)
+        result = finalize_release(args.source, args.checksum, include_music=not args.without_music)
     elif args.command == 'signed':
         result = validate_signed_release(args.unsigned_source, args.signed_source, args.destination)
     else:
