@@ -199,6 +199,42 @@ class HUDTrackingRects:
     position: tuple[int, int, int, int]
 
 
+def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
+    """Largeur réelle de la barre visible, distincte du rectangle de reconnaissance.
+
+    La barre peut n'afficher que le bouton +/-; les vides entre icônes
+    sont tolérés, sans inclure une fenêtre ou un élément éloigné.
+    """
+    scale = max(0.35, min(3.0, float(scale)))
+    minimum = max(1, round(38 * scale))
+    if combat is None or combat.size == 0 or combat.ndim < 2:
+        return minimum
+    height, width = combat.shape[:2]
+    if height < 10 or width <= minimum:
+        return min(width, minimum)
+
+    y0 = min(height - 1, max(0, round(8 * scale)))
+    y1 = min(height, max(y0 + 1, round(29 * scale)))
+    strip = combat[y0:y1]
+    brightness = strip.max(axis=2) if strip.ndim == 3 else strip
+    active = np.count_nonzero(brightness >= 14, axis=0) >= max(1, round(0.32 * len(brightness)))
+    if not np.any(active[:minimum]) or not np.any(active[minimum:]):
+        return minimum
+
+    max_gap = max(6, round(9 * scale))
+    gap = 0
+    end = width
+    for x in range(minimum, width):
+        if active[x]:
+            gap = 0
+        else:
+            gap += 1
+            if gap >= max_gap:
+                end = x - gap + 1
+                break
+    return min(width, max(minimum, end + max(1, round(2 * scale))))
+
+
 def tracking_screen_rects(
     *,
     capture_screen_rect: tuple[int, int, int, int],
@@ -239,9 +275,15 @@ def tracking_screen_rects(
             max(1, int(round(crop_h * sy_screen))),
         )
 
-    combat_x, combat_y, combat_width, combat_height = geometry.combat_button_visual_reference_rect()
+    # Le détecteur continue d'analyser les 320 px du HUD. Seul le contour
+    # affiché utilise la longueur du bandeau réellement présent à l'écran.
+    toolbar = map_reference_rect(
+        geometry.combat_x, geometry.combat_y,
+        geometry.combat_width, geometry.toolbar_reference_height,
+    )
+    visible_width = _visible_combat_toolbar_width(hud.combat, transform.scale)
     return HUDTrackingRects(
-        combat=map_reference_rect(combat_x, combat_y, combat_width, combat_height),
+        combat=(toolbar[0], toolbar[1], max(1, int(round(visible_width * sx_screen))), toolbar[3]),
         zone=map_crop(geometry.zone_x, geometry.zone_y, hud.zone),
         position=map_crop(geometry.position_x, geometry.position_y, hud.position),
     )
