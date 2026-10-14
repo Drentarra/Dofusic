@@ -1024,7 +1024,12 @@ class DofusicController:
 
         self.last_capture_seen_at = captured_at
         self.state.window_found = True
-        hud = extract_hud_inputs(frame.image, self.hud_geometry)
+        # The capture thread already calibrated this very frame. Reusing its
+        # transform avoids a second image-wide HUD geometry estimate per tick.
+        hud = extract_hud_inputs(
+            frame.image, self.hud_geometry,
+            transform=getattr(frame, 'hud_transform', None),
+        )
         if self.automatic_detection_unlocked:
             self._update_combat_from_toolbar(hud.combat)
 
