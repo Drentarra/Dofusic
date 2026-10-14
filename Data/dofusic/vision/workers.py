@@ -211,7 +211,9 @@ class OCRWorkerClient:
         for channel_queue in (self._requests, self._events):
             if channel_queue is None:
                 continue
+            # The feeder may still hold undelivered bytes after forced worker
+            # termination. Never block the UI waiting for a dead consumer.
+            channel_queue.cancel_join_thread()
             channel_queue.close()
-            channel_queue.join_thread()
         self._requests = None
         self._events = None
