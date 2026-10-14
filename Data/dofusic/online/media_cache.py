@@ -11,7 +11,7 @@ from pathlib import Path
 
 from dofusic.audio.library import AUDIO_EXTS
 from dofusic.online.errors import MediaCacheError, MediaErrorCode
-from dofusic.online.models import OnlineTrack
+from dofusic.online.models import OnlineTrack, valid_video_id
 from dofusic.online.retrieval import YouTubeAudioFetcher
 
 
@@ -78,6 +78,8 @@ class MediaCache:
         return f'{hours:d}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes:d}:{seconds:02d}'
 
     def validate_track(self, track: OnlineTrack) -> None:
+        if not valid_video_id(track.video_id):
+            raise MediaCacheError('Identifiant de vidéo YouTube invalide', code=MediaErrorCode.UNAVAILABLE)
         duration = max(0, int(getattr(track, 'duration_seconds', 0) or 0))
         if duration > _MAX_ONLINE_DURATION_SECONDS:
             raise MediaCacheError(
