@@ -97,3 +97,39 @@ def test_ocr_worker_close_does_not_join_blocked_queue_feeders():
     assert requests.calls == ['cancel', 'close']
     assert events.calls == ['cancel', 'close']
     assert client._process is None
+
+
+def test_keyed_lock_pool_serializes_same_key_and_releases_entries():
+    import threading
+    from dofusic.online.keyed_locks import KeyedLockPool
+
+    pool = KeyedLockPool()
+    entered = threading.Event()
+    release = threading.Event()
+    acquired = []
+
+    def first_worker():
+        with pool.hold('video-id'):
+            entered.set()
+            release.wait(2.0)
+
+    def second_worker():
+        with pool.hold('video-id'):
+            acquired.append(True)
+
+    first = threading.Thread(target=first_worker)
+    second = threading.Thread(target=second_worker)
+    first.start()
+    assert entered.wait(1.0)
+    second.start()
+    try:
+        assert pool.active_count == 1
+        assert pool.active_keys == frozenset({'video-id'})
+        assert not acquired
+    finally:
+        release.set()
+        first.join(2.0)
+        second.join(2.0)
+    assert not first.is_alive() and not second.is_alive()
+    assert acquired == [True]
+    assert pool.active_count == 0
