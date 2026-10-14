@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import re
@@ -11,6 +12,9 @@ from typing import Callable
 
 import numpy as np
 
+
+_LOG = logging.getLogger('dofusic.audio.player')
+_LOUDNESS_CACHE_LIMIT = 128
 
 SPECTRUM_BANDS = 24
 SPECTRUM_FPS = 15
@@ -184,6 +188,7 @@ class MusicPlayer:
         self._spectrum_generation = 0
         self._spectrum_cache: dict[Path, tuple[np.ndarray, float]] = {}
         self._loudness_gain_by_path: dict[Path, float] = {}
+        self._loudness_cache_lock = threading.Lock()
         self._current_loudness_gain = 1.0
         self._analysis_thread: threading.Thread | None = None
         self._analysis_jobs: queue.Queue[tuple[Path, int] | None] = queue.Queue(maxsize=1)
@@ -193,6 +198,14 @@ class MusicPlayer:
         self._loudness_thread: threading.Thread | None = None
         self._loudness_process: subprocess.Popen | None = None
         self._playback_fallback_path: Path | None = None
+
+    def _remember_loudness_gain(self, path: Path, gain: float) -> None:
+        """Keep normalization reuse bounded during long online-music sessions."""
+        with self._loudness_cache_lock:
+            self._loudness_gain_by_path.pop(path, None)
+            self._loudness_gain_by_path[path] = float(gain)
+            while len(self._loudness_gain_by_path) > _LOUDNESS_CACHE_LIMIT:
+                self._loudness_gain_by_path.pop(next(iter(self._loudness_gain_by_path)))
 
     def initialize(self) -> bool:
         if self._ready:
@@ -262,7 +275,7 @@ class MusicPlayer:
             if generation != self._spectrum_generation or self.current != path:
                 return
             measured_gain = float(loudness_gain)
-            self._loudness_gain_by_path[path] = measured_gain
+            self._remember_loudness_gain(path, measured_gain)
             self._current_loudness_gain = measured_gain if self.normalize_loudness else 1.0
             if self.spectrum_enabled:
                 self._spectrum_frames = np.asarray(frames, dtype=np.float32)
@@ -473,10 +486,11 @@ class MusicPlayer:
             with self._loudness_lock:
                 if generation != self._loudness_generation or self.current != path:
                     return
-                self._loudness_gain_by_path[path] = gain
+                self._remember_loudness_gain(path, gain)
                 self._current_loudness_gain = gain if self.normalize_loudness else 1.0
             self._apply_effective_volume()
         except Exception:
+            _LOG.exception('Impossible de mesurer le niveau sonore: %s', path)
             return
         finally:
             with self._loudness_lock:
