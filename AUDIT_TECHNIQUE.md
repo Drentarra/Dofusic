@@ -163,3 +163,24 @@ Les tests ajoutés reproduisent en particulier les collisions de fichiers, les d
 ### Limite de preuve
 
 Le second passage correspond à une revue statique et à des essais automatisés des zones sensibles, **pas à une mesure exhaustive de chaque fonction individuelle**. Les appels Win32 dépendant du client Dofus, la qualité du rendu et le son réel restent une recette en jeu. Les optimisations non accompagnées de mesures propres au composant ne sont pas présentées comme des gains chiffrés.
+
+## Troisième revue transversale : code, ressources et affichage 1.0.12
+
+Le troisième passage maintient le principe de **conservation fonctionnelle**, sans transformation cosmétique des chemins Win32, des algorithmes OCR ou des règles audio déjà couvertes. Son périmètre est vérifiable par deux inventaires CI ajoutés à `.github/workflows/ci.yml` :
+
+1. `Data/tools/audit_sources.py` parcourt **chaque source et test Python** et produit `Audit/source_inventory.json` et `Audit/SOURCES.md` : lignes, classes, fonctions, imports, exceptions larges, erreurs de syntaxe et définitions masquées ; la CI échoue sur syntaxe ou collisions de définitions.
+2. `Data/tools/audit_repository.py` parcourt **tous les fichiers suivis par Git** (y compris les musiques, l'icône, les données et les guides) et produit `Audit/repository_files.json` et `Audit/REPOSITORY.md` : catégorie, taille et SHA-256 intégral. La CI échoue si un fichier suivi n'est pas lisible ou résout hors du dépôt. L'empreinte prouve la présence d'octets, non leur comportement audio/visuel.
+
+### Nouvelles incohérences identifiées et corrigées
+
+| Composant | Constat du troisième passage | Décision conservatrice |
+|---|---|---|
+| `audio/player.py` | Le cache FFT était borné en **nombre de morceaux** mais pouvait stocker beaucoup de mémoire pour plusieurs pistes longues | Plafond global de **16 Mio** pour les pistes en cache ; la piste en cours reste affichable même si elle dépasse cette limite |
+| `online/thumbnails.py` | Deux nettoyages concurrents pouvaient parcourir et supprimer les mêmes fichiers, même utilisés par d'autres tâches | Un verrou de nettoyage protège la phase de suppression et les clés de production actives sont exclues |
+| `ui/music_window.py` | `close()` n'était pas idempotente ; la fenêtre pouvait être détruite entre `_poll()` et le prochain rappel Tk | Fermeture unique et gestion explicite de `tk.TclError` pendant `after()` |
+| `version.py`, `main_window.py`, `main.py` | Risque perçu d'une ancienne version visible malgré la mise à jour Git | Les deux affichages utilisent `__version__ = '1.0.12'` ; test du titre et de `--version` |
+| Documentation / packaging | Libellés historiques « V25.1 ECO » différents de la version publique | Bannières et rapports harmonisés sur `1.0.12` ou une désignation générique ; nom du ZIP intermédiaire historique conservé pour ne pas casser les workflows |
+
+### Ce que cela garantit — et ce que cela ne garantit pas
+
+Ce troisième contrôle donne une traçabilité **fichier par fichier** avec comptages structurels, empreintes et tests de non-régression ; il permet notamment de détecter une suppression accidentelle, un fichier manquant, une syntaxe cassée ou un écrasement de méthode Python. Les corrections sont volontairement minimales lorsque la chaîne existante est correcte. Une garantie d'« optimisation parfaite 10/10 » ne résulte pas mécaniquement de ce contrôle : il faudra toujours des essais avec Dofus, des mesures CPU/RAM du programme complet, des vérifications des cadres à différentes résolutions et une écoute réelle des transitions de musiques.
