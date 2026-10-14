@@ -152,3 +152,46 @@ def test_worker_start_failure_releases_allocated_ipc_queues():
 def test_built_program_reports_the_next_version():
     from dofusic.version import __version__
     assert __version__ == '1.0.12'
+
+
+def test_thumbnail_pending_jobs_and_ready_cache_remain_bounded():
+    from concurrent.futures import Future
+    import threading
+
+    from dofusic.online.models import OnlineTrack
+    from dofusic.online.session import MusicSession
+
+    class ImmediateExecutor:
+        def submit(self, fn, *args, **kwargs):
+            future = Future()
+            future.set_result(fn(*args, **kwargs))
+            return future
+
+    session = MusicSession.__new__(MusicSession)
+    session._lock = threading.RLock()
+    session._thumbnail_jobs = {}
+    session._thumbnail_ready = {}
+    session._thumbnail_ready_limit = 48
+    session._thumbnail_job_limit = 48
+    session._thumbnail_executor = ImmediateExecutor()
+    session.thumbnail_service = SimpleNamespace(get_png=lambda track, size: b'png')
+    session.search = SimpleNamespace(
+        tick=lambda: None, snapshot=lambda: SimpleNamespace(revision=0, phase=None),
+    )
+    session.playback = SimpleNamespace(tick=lambda: None)
+    session._last_search_revision = 0
+    session._media_future = None
+
+    for index in range(70):
+        session.request_thumbnail(OnlineTrack(f'{index:011d}', f'Titre {index}'))
+    assert len(session._thumbnail_jobs) == 48
+
+    session.tick()
+    assert len(session._thumbnail_jobs) == 0
+    assert len(session._thumbnail_ready) == 48
+
+    for index in range(70, 95):
+        session.request_thumbnail(OnlineTrack(f'{index:011d}', f'Titre {index}'))
+    session.tick()
+    assert len(session._thumbnail_ready) == 48
+    assert session.take_thumbnail(f'{94:011d}') == b'png'
