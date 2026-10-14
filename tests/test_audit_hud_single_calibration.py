@@ -14,6 +14,7 @@ def test_controller_reuses_transform_provided_by_capture_thread(monkeypatch):
     controller._automatic_detection_unlocked = False
     controller._last_capture_sequence = 0
     controller.last_capture_seen_at = 0.0
+    controller.next_confirmation_at = 0.0
     controller.state = SimpleNamespace()
     controller.hud_geometry = layout.HUDGeometry()
     controller.zone_worker = SimpleNamespace(alive=False)
