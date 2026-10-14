@@ -675,7 +675,10 @@ class MainWindow:
             self._redraw_visualizer((0.0,) * VISUALIZER_BANDS)
         finally:
             if not getattr(self, '_closed', False):
-                self.root.after(VISUALIZER_INTERVAL_MS, self._visualizer_tick)
+                try:
+                    self.root.after(VISUALIZER_INTERVAL_MS, self._visualizer_tick)
+                except tk.TclError:
+                    pass
 
     def _redraw_volume(self, volume: int) -> None:
         volume = max(0, min(100, int(volume)))
@@ -770,6 +773,8 @@ class MainWindow:
         )
 
     def _update(self) -> None:
+        if getattr(self, '_closed', False):
+            return
         try:
             state = self.controller.tick()
             if self.music_session is not None:
@@ -787,7 +792,12 @@ class MainWindow:
             self._set_widget('window', self.window_indicator, text='Erreur Dofusic', fg=palette.text)
             self._set_widget('window-dot', self.window_indicator_dot, fg=palette.red)
         finally:
-            self.root.after(self.config.ui_tick_ms, self._update)
+            if not getattr(self, '_closed', False):
+                try:
+                    self.root.after(self.config.ui_tick_ms, self._update)
+                except tk.TclError:
+                    # A close event may destroy Tk between tick() and scheduling.
+                    pass
 
     def run(self) -> None:
         self.controller.start()
@@ -796,6 +806,8 @@ class MainWindow:
         self.root.mainloop()
 
     def close(self) -> None:
+        if getattr(self, '_closed', False):
+            return
         self._closed = True
         self.config.volume = int(getattr(self.controller.player, 'volume', self.config.volume))
         self.config.mute = bool(getattr(self.controller.player, 'muted', self.config.mute))
