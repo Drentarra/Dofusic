@@ -7,7 +7,7 @@ from typing import Callable, Iterable, Mapping
 from urllib.parse import quote_plus
 from urllib.request import Request, urlopen
 
-from dofusic.online.models import OnlineTrack
+from dofusic.online.models import OnlineTrack, valid_video_id
 
 
 _LOG = logging.getLogger('dofusic.music.discovery')
@@ -55,7 +55,7 @@ def _track_from_row(row: Mapping[str, object]) -> OnlineTrack | None:
         url = _compact_text(row.get('webpage_url') or row.get('url'))
         match = re.search(r'(?:v=|youtu\.be/)([A-Za-z0-9_-]{6,})', url)
         video_id = match.group(1) if match else ''
-    if not video_id:
+    if not valid_video_id(video_id):
         return None
     title = _compact_text(row.get('title')) or 'Vidéo YouTube'
     author = _compact_text(row.get('uploader') or row.get('channel') or row.get('channel_name'))
