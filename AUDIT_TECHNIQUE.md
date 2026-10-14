@@ -144,3 +144,22 @@ Les mesures représentent l'exécution sur un HUD figé ; elles ne capturent ni 
 6. **Performance en jeu** : consigner CPU/RSS, débit de captures, OCR de chaque canal, temps de démarrage et stabilité des threads avec un même scénario et la même machine.
 
 Les tests CI prouvent que les tests programmés et les contrôles de packaging passent, **pas** qu'aucune régression visuelle, sonore ou liée à Dofus n'existe. Aucune release et aucune fusion avant cette recette.
+
+
+## Second passage : duplications, collisions et maintien dans le temps
+
+Un second passage a été effectué sur les modules et fichiers de production, les scripts et les workflows, en distinguant les changements utiles des réécritures sans justification :
+
+- **Cycle de vie Tkinter** (`ui/main_window.py`) : la boucle de mise à jour pouvait reprogrammer `after()` après fermeture, contrairement à la boucle du visualiseur. Les deux suivent désormais la même politique de fermeture idempotente, y compris si la fenêtre est détruite au milieu d'une mise à jour.
+- **Crash OCR** (`vision/workers.py`) : `start()` remplaçait directement les références aux anciennes files après une fin inattendue. L'ancien processus et ses canaux sont désormais nettoyés ; une erreur de démarrage ferme également les files allouées.
+- **Écriture concurrente** (`online/media_cache.py`) : la séquence `exists()` puis `copy2()` autorisait deux sauvegardes sous le même nom. La création exclusive `xb` protège les morceaux existants et les nouvelles écritures concurrentes ; une copie interrompue ne laisse pas de piste partielle.
+- **Miniatures en ligne** (`online/session.py`) : les dictionnaires de résultats en mémoire et les demandes soumises n'avaient pas de plafond explicite. Ils sont bornés, avec suppression des plus anciens résultats non consommés. Le cache disque possédait déjà sa propre limite.
+- **Version exécutable** (`version.py`) : la référence GitHub `v1.0.11` exposait encore l'identité historique `1.0.2-combat-shapes` dans les sources. L'identité intégrée est corrigée en `1.0.12` pour la prochaine version, sans changer les ressources ni la géographie.
+- **Packaging/publication** (`.github/workflows/build-release.yml`) : le mode manuel ne pouvait auparavant publier qu'un tag déjà existant. Un paramètre explicite permet maintenant, **sur main uniquement**, de compiler un commit fixe, vérifier le ZIP et le SBOM, créer un nouveau tag *après les validations*, puis publier avec des notes françaises ; le comportement historique des tags existants est conservé.
+- **Absence de modification nécessaire** : modules purement structuraux, normalisation du texte déjà bornée par `lru_cache`, géométrie des cadres, décision de combat/donjon, sérialisation de configuration, base SQLite et ressources : pas de réécriture ou suppression gratuite.
+
+Les tests ajoutés reproduisent en particulier les collisions de fichiers, les démarrages OCR défectueux, la fermeture Tk pendant un tick, le plafond des miniatures, l'identité de version et la procédure de publication GitHub Actions. Le guide `PUBLICATION_V1.0.12.md` décrit le déclenchement manuel.
+
+### Limite de preuve
+
+Le second passage correspond à une revue statique et à des essais automatisés des zones sensibles, **pas à une mesure exhaustive de chaque fonction individuelle**. Les appels Win32 dépendant du client Dofus, la qualité du rendu et le son réel restent une recette en jeu. Les optimisations non accompagnées de mesures propres au composant ne sont pas présentées comme des gains chiffrés.
