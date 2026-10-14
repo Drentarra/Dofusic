@@ -17,16 +17,16 @@ def _workflow():
     return yaml.load(WORKFLOW.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
 
 
-def _publish(monkeypatch, *, status=200, upload_fails=False):
+def _publish(monkeypatch, *, status=200, upload_fails=False, tag='v1.0.6'):
     import urllib.request
 
     calls = []
     monkeypatch.setenv('GH_REPO', 'Drentarra/Dofusic')
     monkeypatch.setenv('GH_TOKEN', 'test-token')
-    monkeypatch.setenv('RELEASE_TAG', 'v1.0.6')
+    monkeypatch.setenv('RELEASE_TAG', tag)
 
     def read_release(request, **kwargs):
-        assert request.full_url == 'https://api.github.com/repos/Drentarra/Dofusic/releases/tags/v1.0.6'
+        assert request.full_url == f'https://api.github.com/repos/Drentarra/Dofusic/releases/tags/{tag}'
         assert request.get_header('Authorization') == 'Bearer test-token'
         if status != 200:
             raise HTTPError(request.full_url, status, 'API error', {}, None)
@@ -114,3 +114,13 @@ def test_invalid_manual_tag_is_rejected(monkeypatch, tag):
     step = next(s for s in _workflow()['jobs']['build-windows']['steps'] if s['name'] == 'Validate requested release tag')
     with pytest.raises((ValueError, SystemExit)):
         exec(compile(step['run'], '<tag-validation>', 'exec'), {})
+
+
+def test_next_release_uses_reviewed_french_notes(monkeypatch):
+    code, calls = _publish(monkeypatch, status=404, tag='v1.0.12')
+    exec(compile(code, '<publication-step>', 'exec'), {})
+    assert len(calls) == 1
+    assert '--notes-file' in calls[0]
+    assert '.github/RELEASE_NOTES_v1.0.12.md' in calls[0]
+    assert '--generate-notes' not in calls[0]
+    assert (WORKFLOW.parent / 'RELEASE_NOTES_v1.0.12.md').is_file()
