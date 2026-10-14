@@ -49,10 +49,10 @@ def test_incarnam_audio_is_present_and_unmodified():
     """Vérifier l'Opus fourni avec la release avant toute compilation."""
     audio = ROOT / 'Musiques' / 'Incarnam.opus'
     assert audio.is_file(), 'Ajouter Musiques/Incarnam.opus à la branche GitHub avant la release'
-    assert audio.stat().st_size == 3739762
+    assert audio.stat().st_size == 1870897
     with audio.open('rb') as stream:
         assert hashlib.file_digest(stream, 'sha256').hexdigest() == (
-            '789466c02c02878db107b040cbc021f02bc298b7bdfc874a67a7e623882160cb'
+            '9aa0b8dfbda94bc1165ac3fa8336f552abfbcc9ed73eb28a7153a46b1e2aeb29'
         )
 
     # La correspondance Incarnam est déjà disponible dans le mapping SQLite.
