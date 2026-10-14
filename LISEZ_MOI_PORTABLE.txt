@@ -1,4 +1,4 @@
-DOFUSIC V25.1 ECO - CONSTRUCTION PORTABLE WINDOWS X64
+DOFUSIC 1.0.12 - CONSTRUCTION PORTABLE WINDOWS X64
 ============================================================
 
 1. Sur un PC Windows x64 avec Internet, lance BUILD_PORTABLE.bat.
@@ -20,7 +20,7 @@ Le ZIP contient :
 
 Vous pouvez ajouter ou remplacer les musiques dans le dossier Musiques.
 
-V25.1 ECO
+PROFIL PORTABLE
 ---------
 - Mode développeur et mot de passe supprimés.
 - Session YouTube supprimée.
