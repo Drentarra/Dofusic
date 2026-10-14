@@ -85,6 +85,7 @@ class LocationResolver:
             if len(value) == 1
         }
         self._prepared_by_key = by_key
+        self._last_coordinate_context: tuple[Coordinates, _CoordinateContext] | None = None
 
     @staticmethod
     def _prepare_location(location: LocationRecord) -> PreparedLocation:
@@ -181,14 +182,21 @@ class LocationResolver:
     def _coordinate_context(self, coordinates: Coordinates | None) -> _CoordinateContext:
         if coordinates is None:
             return _CoordinateContext()
+        cached = self._last_coordinate_context
+        if cached is not None and cached[0] == coordinates:
+            return cached[1]
         exact = self.repository.coordinate_candidates(coordinates, tolerance=0)
         nearby = self.repository.coordinate_candidates(coordinates, tolerance=1)
-        return _CoordinateContext(
+        context = _CoordinateContext(
             exact_subarea_ids=frozenset(item.id for item in exact),
             exact_area_ids=frozenset(item.parent_area_id for item in exact if item.parent_area_id is not None),
             nearby_subarea_ids=frozenset(item.id for item in nearby),
             nearby_area_ids=frozenset(item.parent_area_id for item in nearby if item.parent_area_id is not None),
         )
+        # One bounded entry: on unchanged maps, avoid two SQLite queries
+        # per OCR result without retaining an unbounded coordinate cache.
+        self._last_coordinate_context = (coordinates, context)
+        return context
 
     @staticmethod
     def _coordinate_bonus(location: LocationRecord, context: _CoordinateContext) -> tuple[float, float]:
