@@ -50,6 +50,11 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/runtime_probe.py
           python Data/tools/prepare_models.py
+      - name: Probe OCR worker startup and shutdown
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python Data/tools/ocr_worker_probe.py
       - name: Check out v1.0.11 for comparative benchmarks
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
