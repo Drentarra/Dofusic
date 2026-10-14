@@ -835,11 +835,17 @@ class MusicWindow:
             self._refresh_playback_panel()
         finally:
             if not self._closed:
-                self.window.after(self.POLL_MS, self._poll)
+                try:
+                    self.window.after(self.POLL_MS, self._poll)
+                except tk.TclError:
+                    # A window can be destroyed while the callback is finishing.
+                    pass
 
     def close(self) -> None:
-        self._remember_current_search()
+        if self._closed:
+            return
         self._closed = True
+        self._remember_current_search()
         if self._after_id is not None:
             try:
                 self.window.after_cancel(self._after_id)
