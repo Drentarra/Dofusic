@@ -59,6 +59,7 @@ class MusicLibrary:
         self.ambiguous_track_keys: set[str] = set()
         self._named_tracks: dict[str, tuple[Path, ...]] = {}
         self._ambiguity_cache: dict[str, bool] = {}
+        self._best_track_cache: dict[tuple[str, ...], Path | None] = {}
         # Generic music is a playback-session choice, not a geography cache.
         # A choice stays stable while the current exploration/combat cycle is
         # active and rotates only when the controller explicitly starts a new
@@ -116,6 +117,7 @@ class MusicLibrary:
         # need the expensive geography check.
         self.ambiguous_track_keys.clear()
         self._ambiguity_cache.clear()
+        self._best_track_cache.clear()
 
     @staticmethod
     def _score_track(path: Path, anchors: tuple[str, ...]) -> _TrackScore:
@@ -155,6 +157,17 @@ class MusicLibrary:
         return any(strict_track == norm_key(anchor) for anchor in anchors if anchor)
 
     def _best_track(self, anchors: tuple[str, ...]) -> Path | None:
+        """Cache only deterministic filename matching, never generic rotations."""
+        key = tuple(anchors)
+        if key in self._best_track_cache:
+            return self._best_track_cache[key]
+        selected = self._rank_track_candidates(key)
+        self._best_track_cache[key] = selected
+        if len(self._best_track_cache) > 128:
+            self._best_track_cache.pop(next(iter(self._best_track_cache)))
+        return selected
+
+    def _rank_track_candidates(self, anchors: tuple[str, ...]) -> Path | None:
         if not self.tracks:
             return None
 
