@@ -84,6 +84,8 @@ class MusicSession:
 
         self._thumbnail_jobs: dict[tuple[str, tuple[int, int]], Future] = {}
         self._thumbnail_ready: dict[str, bytes] = {}
+        self._thumbnail_ready_limit = 48
+        self._thumbnail_job_limit = 48
         self._media_future: Future | None = None
         self._media_track: OnlineTrack | None = None
         self._media_action = ''
@@ -168,7 +170,11 @@ class MusicSession:
             if track.video_id in self._thumbnail_ready:
                 return
             existing = self._thumbnail_jobs.get(key)
-            if existing is not None and not existing.done():
+            if existing is not None:
+                # A completed job is collected by tick() before retrying;
+                # do not create a second request for the same thumbnail.
+                return
+            if len(self._thumbnail_jobs) >= self._thumbnail_job_limit:
                 return
             try:
                 self._thumbnail_jobs[key] = self._thumbnail_executor.submit(
@@ -304,6 +310,8 @@ class MusicSession:
                     payload = b''
                 if payload:
                     self._thumbnail_ready[video_id] = payload
+                    while len(self._thumbnail_ready) > self._thumbnail_ready_limit:
+                        self._thumbnail_ready.pop(next(iter(self._thumbnail_ready)))
 
             future = self._media_future
             if future is not None and future.done():
