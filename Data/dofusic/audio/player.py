@@ -640,6 +640,12 @@ class MusicPlayer:
         try:
             if self.current:
                 self._pygame.mixer.music.fadeout(self.fade_ms)
+            # A previous analysis is independent from pygame playback and
+            # must not keep decoding the old track after a music transition.
+            self._terminate_spectrum_process()
+            with self._loudness_lock:
+                self._loudness_generation += 1
+            self._terminate_loudness_process()
             self._current_loudness_gain = self._loudness_gain_by_path.get(target, 1.0)
             loaded_path = target
             try:
@@ -674,6 +680,9 @@ class MusicPlayer:
         self.current = None
         self._current_loudness_gain = 1.0
         self._terminate_spectrum_process()
+        with self._loudness_lock:
+            self._loudness_generation += 1
+        self._terminate_loudness_process()
         if not self._ready or self._pygame is None:
             return
         try:
