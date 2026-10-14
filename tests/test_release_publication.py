@@ -124,3 +124,29 @@ def test_next_release_uses_reviewed_french_notes(monkeypatch):
     assert '.github/RELEASE_NOTES_v1.0.12.md' in calls[0]
     assert '--generate-notes' not in calls[0]
     assert (WORKFLOW.parent / 'RELEASE_NOTES_v1.0.12.md').is_file()
+
+
+def test_manual_publish_from_main_creates_tag_after_verifying_the_portable():
+    workflow = _workflow()
+    inputs = workflow['on']['workflow_dispatch']['inputs']
+    assert inputs['create_tag_from_main']['default'] == 'false'
+    build = workflow['jobs']['build-windows']['steps']
+    final = workflow['jobs']['release-windows']['steps']
+
+    validation = next(s for s in build if s['name'] == 'Validate new release request')
+    assert "refs/heads/main" in validation['run']
+    assert "inputs.create_tag_from_main" in validation['if']
+
+    for job in (build, final):
+        checkout = next(s for s in job if s['name'] == 'Checkout sources')
+        assert 'inputs.create_tag_from_main && github.sha' in checkout['with']['ref']
+        assert "format('refs/tags/{0}', inputs.release_tag)" in checkout['with']['ref']
+
+    names = [step['name'] for step in final]
+    tag_step = next(s for s in final if s['name'] == 'Create verified release tag from main')
+    assert names.index('Generate and validate installed build environment SBOM') < names.index(tag_step['name'])
+    assert names.index('Upload verification artifact') < names.index(tag_step['name'])
+    assert names.index(tag_step['name']) < names.index('Publish GitHub release')
+    assert "inputs.create_tag_from_main" in tag_step['if']
+    assert 'refs/tags/$env:RELEASE_TAG' in tag_step['run']
+    assert '$env:VERIFIED_COMMIT' in tag_step['run']
