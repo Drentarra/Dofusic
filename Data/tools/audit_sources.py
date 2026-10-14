@@ -118,7 +118,7 @@ def report(result: dict) -> str:
     ]
     for name, record in result['files'].items():
         lines.append(
-            f"| \`{name}\` | {record['lines']} | {record['classes']} "
+            f"| `{name}` | {record['lines']} | {record['classes']} "
             f"| {record['functions']} | {len(record['broad_except_lines'])} |"
         )
     if result['invalid_python_files'] or result['duplicate_definitions']:
