@@ -53,3 +53,49 @@ def test_close_terminates_decoder_and_stops_analysis_thread():
     player.close()
     assert process.terminated
     assert player._analysis_stop.is_set()
+
+
+def test_library_reuses_fuzzy_matches_and_invalidates_cache_on_rescan(tmp_path):
+    from dofusic.audio.library import MusicLibrary
+    from dofusic.models import LocationKind, LocationRecord
+
+    place = LocationRecord(7, 'Astrub', LocationKind.AREA)
+
+    class Repository:
+        def all_locations(self):
+            return (place,)
+
+    first = tmp_path / 'Astrub.opus'
+    first.write_bytes(b'fake')
+    library = MusicLibrary(Repository(), tmp_path)
+    calculations = []
+    original = library._rank_track_candidates
+
+    def counting(anchors):
+        calculations.append(anchors)
+        return original(anchors)
+
+    library._rank_track_candidates = counting
+    assert library.resolve(place, raw_text='Astrub') == first
+    assert library.resolve(place, raw_text='Astrub') == first
+    assert len(calculations) == 1
+    library.scan()
+    assert library.resolve(place, raw_text='Astrub') == first
+    assert len(calculations) == 2
+
+
+def test_music_library_generic_cycle_is_not_cached(tmp_path):
+    from dofusic.audio.library import MusicLibrary
+
+    class Repository:
+        def all_locations(self):
+            return ()
+
+    for stem in ('Musique', 'Musique1'):
+        (tmp_path / f'{stem}.opus').write_bytes(b'fake')
+    library = MusicLibrary(Repository(), tmp_path)
+    assert library.resolve(None, combat=False) in library.generic_tracks
+    first = library.resolve(None, combat=False)
+    assert library.resolve(None, combat=False) == first
+    second = library.resolve(None, combat=False, new_generic_cycle=True)
+    assert second != first
