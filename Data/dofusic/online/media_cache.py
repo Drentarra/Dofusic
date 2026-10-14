@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import logging
 import os
 import re
@@ -12,6 +11,7 @@ from pathlib import Path
 from dofusic.audio.library import AUDIO_EXTS
 from dofusic.online.errors import MediaCacheError, MediaErrorCode
 from dofusic.online.models import OnlineTrack, valid_video_id
+from dofusic.online.keyed_locks import KeyedLockPool
 from dofusic.online.retrieval import YouTubeAudioFetcher
 
 
@@ -65,8 +65,7 @@ class MediaCache:
         self._downloader = downloader
         self._transcoder = transcoder
         self._fetcher = fetcher or YouTubeAudioFetcher(self.cache_dir)
-        self._locks_guard = threading.Lock()
-        self._locks: dict[str, tuple[threading.Lock, int]] = {}
+        self._video_locks = KeyedLockPool()
         self._prune_lock = threading.Lock()
 
 
@@ -90,32 +89,10 @@ class MediaCache:
 
     @property
     def active_lock_count(self) -> int:
-        with self._locks_guard:
-            return len(self._locks)
+        return self._video_locks.active_count
 
-    @contextmanager
     def _video_lock(self, video_id: str):
-        key = str(video_id or '')
-        with self._locks_guard:
-            entry = self._locks.get(key)
-            if entry is None:
-                lock, users = threading.Lock(), 0
-            else:
-                lock, users = entry
-            self._locks[key] = (lock, users + 1)
-        lock.acquire()
-        try:
-            yield
-        finally:
-            lock.release()
-            with self._locks_guard:
-                current = self._locks.get(key)
-                if current is not None and current[0] is lock:
-                    users = current[1] - 1
-                    if users <= 0:
-                        self._locks.pop(key, None)
-                    else:
-                        self._locks[key] = (lock, users)
+        return self._video_locks.hold(str(video_id or ''))
 
     @staticmethod
     def _is_valid_file(path: Path) -> bool:
@@ -235,8 +212,7 @@ class MediaCache:
         # every video that currently owns/waits on its producer lock so pruning
         # cannot delete another operation's finished source between download and
         # playback/transcode.
-        with self._locks_guard:
-            active_video_ids = {key for key, (_lock, users) in self._locks.items() if users > 0}
+        active_video_ids = self._video_locks.active_keys
         with self._prune_lock:
             try:
                 files = [path for path in self.cache_dir.iterdir() if path.is_file()]
