@@ -10,7 +10,7 @@ from urllib.request import Request, urlopen
 
 from PIL import Image, ImageOps
 
-from dofusic.online.models import OnlineTrack
+from dofusic.online.models import OnlineTrack, valid_video_id
 
 
 _MAX_DOWNLOAD_BYTES = 3 * 1024 * 1024
@@ -125,6 +125,8 @@ class ThumbnailService:
             return b''
 
     def get_png(self, track: OnlineTrack, *, size: tuple[int, int] = (112, 63)) -> bytes:
+        if not valid_video_id(track.video_id):
+            return b''
         target = self._path(track, size)
         key = target.name
         with self._key_lock(key):
