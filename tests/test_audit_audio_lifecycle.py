@@ -99,3 +99,23 @@ def test_music_library_generic_cycle_is_not_cached(tmp_path):
     assert library.resolve(None, combat=False) == first
     second = library.resolve(None, combat=False, new_generic_cycle=True)
     assert second != first
+
+
+def test_stop_also_interrupts_loudness_analysis_when_visualizer_is_disabled():
+    class Process:
+        terminated = False
+
+        def poll(self):
+            return None if not self.terminated else 0
+
+        def terminate(self):
+            self.terminated = True
+
+    player = MusicPlayer(spectrum_enabled=False, normalize_loudness=True)
+    process = Process()
+    with player._loudness_lock:
+        player._loudness_process = process
+    before_generation = player._loudness_generation
+    player.stop()
+    assert process.terminated
+    assert player._loudness_generation == before_generation + 1
