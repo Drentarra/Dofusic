@@ -41,7 +41,7 @@ def _publish(monkeypatch, *, status=200, upload_fails=False, tag='v1.0.6'):
 
     monkeypatch.setattr(urllib.request, 'urlopen', read_release)
     monkeypatch.setattr(subprocess, 'run', run)
-    step = next(s for s in _workflow()['jobs']['release-windows']['steps'] if 'RELEASE_TAG' in s.get('env', {}))
+    step = next(s for s in _workflow()['jobs']['release-windows']['steps'] if s['name'] == 'Publish GitHub release')
     return step['run'], calls
 
 
@@ -93,7 +93,7 @@ def test_manual_recovery_builds_the_tag_and_keeps_attestation(monkeypatch):
         checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout@'))
         assert "format('refs/tags/{0}', inputs.release_tag)" in checkout['with']['ref']
     attest = next(s for s in final['steps'] if s['name'] == 'Attest final public ZIP')
-    publish = next(s for s in final['steps'] if 'RELEASE_TAG' in s.get('env', {}))
+    publish = next(s for s in final['steps'] if s['name'] == 'Publish GitHub release')
     assert attest['if'] == publish['if']
     assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish['if']
     assert "github.event_name == 'workflow_dispatch' && inputs.release_tag != ''" in publish['if']
