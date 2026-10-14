@@ -1,0 +1,146 @@
+# Dofusic — audit technique de la base v1.0.11
+
+## Référence et règles de modification
+
+- Référence immuable : commit `1617ce283ec9b11c67c4f9e5f71c5f37888eddce`, tag `v1.0.11`.
+- Développement : `audit/consolidation-v1-0-11`, PR n°20, sans fusion automatique et sans publication.
+- Données géographiques : aucun ID, enregistrement ou correspondance de `Data/dofus_data.sqlite`, `Data/place_aliases.json` et `Data/dungeons.json` n'a été modifié.
+- Bibliothèque fournie : 162 fichiers audio, dont Incarnam, non modifiés.
+- Architecture portable : Windows x64 / Python 3.11.9 / PyInstaller, via les workflows existants.
+- Un fichier noté « examiné » signifie qu'on a étudié son rôle, ses dépendances et ses chemins sensibles. Cela **ne signifie pas** qu'on a prouvé chacune de ses fonctions ni qu'il fallait la réécrire.
+
+## Chaîne fonctionnelle vérifiée dans les sources
+
+```text
+ProcessPresence -> CaptureService -> DofusCapture -> CapturedFrame (calibration incluse)
+   -> extraction HUD -> filtre de changement -> ordonnanceur OCR « single flight »
+   -> workers OCR zone/position isolés -> LocationResolver (SQLite)
+   -> DecisionEngine (confirmation) -> MusicLibrary (priorité donjon)
+   -> MusicPlayer / FFmpeg / pygame
+                                      \-> overlays Tkinter
+MusicSession -> recherche, lecture manuelle, téléchargement, miniatures (exécuteurs dédiés)
+```
+
+Les positions doivent déverrouiller l'automatisme au début d'une session de Dofus. Une zone inconnue ne remplace pas automatiquement le dernier lieu confirmé. En donjon, la musique de donjon est prioritaire sur la détection de combat ; hors donjon, les musiques de combat restent disponibles. Les contrôles de fichiers en ligne ne doivent pas intervenir dans la décision géographique.
+
+## Inventaire des modules Python de production
+
+| Fichier (sous `Data/dofusic/`) | Rôle et décision d'audit |
+|---|---|
+| `__init__.py` | Marqueur de paquet, pas de traitement |
+| `app.py` | Orchestration, processus Dofus, rendu HUD, OCR et audio ; réutilisation de la calibration et limitation des logs d'échec |
+| `config.py` | Validation, configuration portable et migrations ; maintien des préférences existantes |
+| `logging_setup.py` | Rotation et niveau des logs ; conservation |
+| `models.py` | Contrats immuables des lieux et OCR ; conservation des champs et identifiants |
+| `text.py` | Normalisation et mise en cache des calculs linguistiques ; mécanismes conservés |
+| `version.py` | Identité logicielle : aucune hausse de version avant publication |
+| `audio/__init__.py` | Marqueur de paquet |
+| `audio/dungeons.py` | Catalogue déterministe, expéditions et alias de boss ; priorité préservée |
+| `audio/library.py` | Scan et résolution des morceaux ; cache borné des recherches déterministes et invalidation après scan |
+| `audio/player.py` | pygame, FFmpeg, analyse du spectre, normalisation, volume et transitions ; arrêt du décodeur, cache de gains borné |
+| `capture/__init__.py` | Exports |
+| `capture/dofus_window.py` | Recherche HWND, ROI MSS, PrintWindow, DPI et handles GDI ; chemins de repli conservés |
+| `capture/process_presence.py` | Énumération Toolhelp32 sans psutil ; conservation |
+| `capture/service.py` | Thread dédié, dernière capture, cadence et erreurs ; reprise de l'initialisation et prévention du double thread |
+| `location/__init__.py` | Marqueur de paquet |
+| `location/coordinates.py` | Lecture, hypothèses et compatibilité des coordonnées ; conservation |
+| `location/decision.py` | Confirmation temporelle, score, ambiguïté ; conservation |
+| `location/repository.py` | Schéma, index, requêtes coordonnées et outils d'import ; base et SQL géographique inchangés |
+| `location/resolver.py` | Index lexical, variantes parent/enfant, contexte spatial ; mémoïsation d'une position constante |
+| `location/suggestions.py` | Propositions de lieux ; conservation |
+| `online/__init__.py` | Exports |
+| `online/discovery.py` | Recherche YouTube et suggestions ; validation stricte des identifiants reçus |
+| `online/errors.py` | Erreurs typées ; conservation |
+| `online/keyed_locks.py` | Nouvelle implémentation commune des verrous temporaires par clé |
+| `online/media_cache.py` | Téléchargement/convertisseur, cache et bibliothèque ; contrôle des IDs et centralisation des verrous |
+| `online/models.py` | Références vidéo et playlist ; validation des IDs YouTube |
+| `online/playback.py` | Préparation et succession des lectures, file manuelle ; conservation des transitions |
+| `online/retrieval.py` | yt-dlp, QuickJS, reprise et classification d'erreurs ; validation des IDs |
+| `online/search.py` | Exécuteurs et générations anti-résultats obsolètes ; conservation |
+| `online/session.py` | Coordination musique manuelle, recherches et miniatures ; conservation |
+| `online/thumbnails.py` | Miniatures PIL en tâche de fond, cache limité ; contrôle des IDs et centralisation des verrous |
+| `ui/__init__.py` | Marqueur de paquet |
+| `ui/brand.py` | Logo, aucune logique coûteuse à chaud |
+| `ui/main_window.py` | Boucle Tk, état, visualiseur et préférences ; suppression des redraws inutiles et journalisation des exceptions |
+| `ui/music_window.py` | Recherche, téléchargements et gestion de playlist ; contrôles Tk conservés |
+| `ui/overlay.py` | Calque transparent Win32, capture exclue et contours ; placement et masquage conservés |
+| `ui/settings_window.py` | Préférences, valeurs numériques, visibilité ; conservation |
+| `ui/themes.py` | Palettes et recoloration ; conservation |
+| `ui/volume.py` | Gestes volume et mute ; conservation |
+| `ui/window_chrome.py` | Attributs DWM et mise à jour différée ; conservation |
+| `vision/__init__.py` | Marqueur de paquet |
+| `vision/change_gate.py` | Signature compacte des changements OCR ; conservation |
+| `vision/combat.py` | Détection visuelle, hystérésis des états ; conservation |
+| `vision/combat_shapes.py` | Silhouettes de référence des boutons combat ; aucune modification |
+| `vision/engines.py` | ONNX RapidOCR et variantes coordonnées ; normalisation et repli conservés |
+| `vision/layout.py` | Échelles de HUD, ROIs, crop du texte ; réutilisation de sa transformation par le contrôleur |
+| `vision/position.py` | Sélection de la meilleure coordonnée ; conservation |
+| `vision/position_overlay.py` | Largeur stable des contours de position ; conservation |
+| `vision/scheduler.py` | Single-flight et reprise des demandes ; conservation |
+| `vision/workers.py` | Processus OCR séparés, files IPC et redémarrage ; fermeture non bloquante et prévention d'orphelins |
+
+## Autres fichiers et validation
+
+| Ensemble | Décision |
+|---|---|
+| `Data/main.py` | Entrée de l'application et autotest, conservés |
+| `Data/Dofusic.spec` | Onedir, assets, dépendances, architecture conservés |
+| `Data/tools/build_portable.py` / `prepare_models.py` / `runtime_probe.py` | Compilation et contrôles existants maintenus |
+| `Data/tools/benchmark_runtime.py` | Nouveau banc, exécutable sur base v1.0.11 et branche audit |
+| `.github/workflows/ci.yml` | Tests, sondes, comparaison avant/après puis build Windows portable ; enrichi sans second constructeur |
+| `.github/workflows/build-release.yml` | Publication seulement par tag ou commande explicite avec tag ; non déclenchée |
+| `.github/scripts/verify_release.py` | Validation de la structure ZIP, chemins Windows et SBOM ; conservée |
+| `.github/dependabot.yml`, listes de dépendances et `BUILD_PORTABLE.bat` | Politique de versions, lancement de construction et sécurité : conservés |
+| `Data/dofus_data.sqlite`, `dungeons.json`, `place_aliases.json` | Données inchangées ; intégrité du référentiel contrôlée par les tests et les probes |
+| `Musiques/`, `Data/dofusic/ui/assets/` | Médias inchangés ; aucun remplacement arbitraire de ressource |
+| `tests/` | Régressions existantes et nouveaux tests ciblés ; aucun test historique supprimé |
+
+Les fichiers texte de documentation, notices et licences restent en place. Les fichiers binaires ne sont pas assimilés à des modules Python à optimiser.
+
+## Problèmes démontrés et décisions
+
+| Impact estimé | Constats étayés par le code | Traitement |
+|---|---|---|
+| Fort, récupération | Un échec lors de la création du backend pouvait clore définitivement le thread de capture | Réessai temporisé ; test avec une panne puis une récupération |
+| Fort, synchronisation | Fermeture de files IPC susceptibles d'attendre une vidange impossible après arrêt du worker | Annulation des jointures de feeders et destruction conditionnée à l'arrêt réel |
+| Fort, performances | Résolution à position constante : deux lectures SQL géographiques répétées | Cache d'un contexte par coordonnées, invalidé lors du changement de position |
+| Moyen, CPU | `estimate_hud_transform` exécuté pendant la capture puis de nouveau au tick du contrôleur | Transformation déjà présente sur la frame réutilisée |
+| Moyen, CPU | Comparaisons musicales déterministes recalculées après revisites | Cache borné, invalidé après scan, sans mise en cache de la rotation générique |
+| Moyen, interface | Tk actualisait couleur et taille de barres de visualiseur inchangées | Comparaison des propriétés rendues avant les appels Tk |
+| Moyen, ressources | Processus de décodage FFmpeg pouvait survivre à l'arrêt du lecteur | Suivi du processus et interruption explicite |
+| Moyen, mémoire | Cache des gains audio croissant à chaque morceau écouté | Limitation à 128 morceaux |
+| Moyen, sécurité | Identifiant vidéo externe utilisé dans noms de fichiers et chemins glob | Validation du format YouTube à l'ingestion et aux frontières d'accès |
+| Faible, maintenance | Deux copies de verrous temporaires par clé | Composant unique avec compteur d'utilisateurs et test de concurrence |
+| Faible, observabilité | Exceptions Tk et répétition des erreurs de capture | Trace des exceptions et limitation des avertissements récurrents |
+
+Les mécanismes déjà adaptés (deux workers, gate OCR, caches de spectre, priorités donjon, overlay exclu des captures) n'ont pas été supprimés à titre esthétique.
+
+## Banc d'essai et interprétation
+
+La CI Windows exécute `Data/tools/benchmark_runtime.py` sur le tag v1.0.11 et sur le candidat, avec la même base et le même fichier image. Un rapport lisible et les deux JSON sont livrés dans l'artefact de CI.
+
+Premier rapport vérifié : [GitHub Actions 38636038896](https://github.com/Drentarra/Dofusic/actions/runs/38636038896).
+
+| Échantillon synthétique | Référence | Candidat mesuré |
+|---|---:|---:|
+| Résolution lieu, moyenne | 0,6985 ms | 0,0858 ms |
+| Résolution lieu, p95 | 0,7694 ms | 0,0999 ms |
+| Requêtes SQL pour 80 répétitions, après amorçage | 160 | 0 |
+| Extraction du HUD, moyenne | 0,1585 ms | 0,1611 ms |
+| OCR zone, moyenne | 25,3156 ms | 25,2201 ms |
+| OCR position, moyenne | 306,3919 ms | 308,4439 ms |
+
+La première mesure RSS était absente à cause de la signature Win32 ; cette instrumentation a été corrigée après ce rapport. **Ne pas déduire un gain CPU, RAM ou OCR global de ces seules valeurs.**
+
+Les mesures représentent l'exécution sur un HUD figé ; elles ne capturent ni le coût MSS/PrintWindow d'une fenêtre Dofus vivante, ni les transitions entre fenêtres, ni une session musicale longue. Les temps OCR observés sur cette fixture ne prouvent pas que tous les OCR en jeu prennent 300 ms.
+
+## Risques résiduels et protocole de validation utilisateur
+
+1. **Windows avec Dofus réel** : ouverture et fermeture, changement d'écran, perte de fenêtre, alt-tab, DPI multiples, reconnexion.
+2. **Règles audio** : combat normal, donjon avant/durant/après combat, passage Incarnam, surcharge en ligne, reprise musique Dofus, normalisation et transitions à l'oreille.
+3. **OCR** : fautes de lecture, téléportation, disparition temporaire du HUD, latence sous forte charge CPU.
+4. **Audio externe** : recherches et lecture réelles (réseau, restrictions YouTube, mises à jour des plateformes).
+5. **Packaging** : lancer effectivement `Dofusic.exe` sur un Windows vierge sans Python, inspecter les fichiers et permissions portables.
+6. **Performance en jeu** : consigner CPU/RSS, débit de captures, OCR de chaque canal, temps de démarrage et stabilité des threads avec un même scénario et la même machine.
+
+Les tests CI prouvent que les tests programmés et les contrôles de packaging passent, **pas** qu'aucune régression visuelle, sonore ou liée à Dofus n'existe. Aucune release et aucune fusion avant cette recette.
