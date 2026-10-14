@@ -502,6 +502,8 @@ class MainWindow:
             pass
         self._update_music_entry_state()
         self._last_rendered.clear()
+        # A theme repaint invalidates the previous per-bar canvas styling.
+        self._visualizer_last_drawn = {}
         if self._last_state is not None:
             self._render_state(self._last_state)
 
@@ -635,6 +637,10 @@ class MainWindow:
         if len(previous) != len(bars):
             previous = [0.0] * len(bars)
         smoothed: list[float] = []
+        palette = getattr(self, 'palette', None)
+        if palette is None:
+            palette = get_theme('emerald')
+        drawn = getattr(self, '_visualizer_last_drawn', {})
         for index, bar in enumerate(bars):
             target = values[index] if index < len(values) else 0.0
             old = previous[index]
@@ -644,10 +650,14 @@ class MainWindow:
                 level = 0.0
             smoothed.append(level)
             height = 2 + int(round(level * (self._visualizer_max_height - 2)))
+            color = palette.track_active if level >= 0.10 else palette.visualizer_idle
+            if drawn.get(bar) == (height, color):
+                continue
             x1, _y1, x2, _y2 = self.canvas.coords(bar)
             self.canvas.coords(bar, x1, self._visualizer_baseline - height, x2, self._visualizer_baseline)
-            palette = getattr(self, 'palette', get_theme('emerald'))
-            self.canvas.itemconfigure(bar, fill=palette.track_active if level >= 0.10 else palette.visualizer_idle)
+            self.canvas.itemconfigure(bar, fill=color)
+            drawn[bar] = (height, color)
+        self._visualizer_last_drawn = drawn
         self._visualizer_display_levels = smoothed
 
     def _visualizer_tick(self) -> None:
