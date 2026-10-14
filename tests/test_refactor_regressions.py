@@ -104,7 +104,7 @@ def test_dungeon_combat_keeps_normal_dungeon_music_when_no_specific_combat_track
     assert resolved.stem == 'Grange du Tournesol Affamé'
 
 
-def test_dungeon_specific_combat_track_beats_dungeon_normal_music(tmp_path):
+def test_dungeon_specific_combat_track_never_interrupts_dungeon_music(tmp_path):
     from dofusic.audio.dungeons import DungeonCatalog
     from dofusic.audio.library import MusicLibrary
     from dofusic.models import LocationKind, LocationRecord
@@ -130,7 +130,8 @@ def test_dungeon_specific_combat_track_beats_dungeon_normal_music(tmp_path):
 
     resolved = library.resolve(location, combat=True)
     assert resolved is not None
-    assert resolved.stem == 'Musique Combat Tournesol Affamé'
+    assert resolved.stem == 'Grange du Tournesol Affamé'
+    assert library.resolve(location, combat=False) == resolved
 
 
 def test_track_loudness_gain_is_bounded_and_targets_common_level():

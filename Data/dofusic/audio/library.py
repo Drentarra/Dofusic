@@ -230,20 +230,6 @@ class MusicLibrary:
     def _is_dungeon(self, location: LocationRecord) -> bool:
         return self.dungeon_catalog.is_dungeon(location)
 
-    def _dungeon_combat_track(self, location: LocationRecord) -> Path | None:
-        # Boss name first (catalog order), then canonical dungeon/location name.
-        aliases = (*self._dungeon_aliases(location), location.name)
-        seen: set[str] = set()
-        for alias in aliases:
-            key = match_key(alias)
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            track = self._exact_named_track(f'{_COMBAT_STEM} {alias}')
-            if track is not None:
-                return track
-        return None
-
     def _resolve_normal(
         self,
         location: LocationRecord,
@@ -275,22 +261,18 @@ class MusicLibrary:
         combat: bool = False,
         new_generic_cycle: bool = False,
     ) -> Path | None:
+        # Le contexte donjon confirmé prime sur TOUS les modes de combat.
+        # Un combat (ou un HUD masqué) ne doit jamais relancer ni remplacer
+        # la musique d'exploration du donjon, même si un fichier boss existe.
+        if location is not None and self._is_dungeon(location):
+            return self._resolve_normal(location, raw_text, new_generic_cycle=False)
+
         if not combat:
             return (
                 self._choose_generic(combat=False, new_cycle=new_generic_cycle)
                 if location is None
                 else self._resolve_normal(location, raw_text, new_generic_cycle=new_generic_cycle)
             )
-
-        # A dungeon is an explicit catalogue class, not a name heuristic. Generic
-        # combat music must never replace its current exploration soundtrack. If
-        # the user supplied a boss/dungeon-specific combat track, that exact file
-        # is allowed to take over for the fight.
-        if location is not None and self._is_dungeon(location):
-            specific_combat = self._dungeon_combat_track(location)
-            if specific_combat is not None:
-                return specific_combat
-            return self._resolve_normal(location, raw_text, new_generic_cycle=new_generic_cycle)
 
         # Combat names are deterministic rather than fuzzy: a file called
         # "Musique Combat Astrub" can never collide with ordinary "Astrub".

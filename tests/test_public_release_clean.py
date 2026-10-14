@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
+import sqlite3
 from pathlib import Path
 import zipfile
 
@@ -39,7 +41,42 @@ def test_public_music_folder_contains_bundled_tracks():
     music = ROOT / 'Musiques'
     assert music.is_dir()
     tracks = sorted(music.rglob('*.opus'))
-    assert len(tracks) == 161
+    # Ajouter Incarnam doit incrémenter le nombre d'Opus embarqués.
+    assert len(tracks) == 162
+
+
+def test_incarnam_audio_is_present_and_unmodified():
+    """Vérifier l'Opus fourni avec la release avant toute compilation."""
+    audio = ROOT / 'Musiques' / 'Incarnam.opus'
+    assert audio.is_file(), 'Ajouter Musiques/Incarnam.opus à la branche GitHub avant la release'
+    assert audio.stat().st_size == 1870897
+    with audio.open('rb') as stream:
+        assert hashlib.file_digest(stream, 'sha256').hexdigest() == (
+            '9aa0b8dfbda94bc1165ac3fa8336f552abfbcc9ed73eb28a7153a46b1e2aeb29'
+        )
+
+    # La correspondance Incarnam est déjà disponible dans le mapping SQLite.
+    with sqlite3.connect(ROOT / 'Data' / 'dofus_data.sqlite') as database:
+        assert database.execute('SELECT name FROM areas WHERE id = 45').fetchone() == ('Incarnam',)
+
+
+def test_incarnam_area_resolves_to_named_track(tmp_path):
+    from dofusic.audio.library import MusicLibrary
+    from dofusic.models import LocationKind, LocationRecord
+
+    area = LocationRecord(45, 'Incarnam', LocationKind.AREA)
+
+    class Repository:
+        def all_locations(self):
+            return (area,)
+
+        def parent_area(self, _location):
+            return None
+
+    expected = tmp_path / 'Incarnam.opus'
+    expected.write_bytes(b'OggS')  # La bibliothèque trie les chemins sans décoder le fichier.
+    library = MusicLibrary(Repository(), tmp_path)
+    assert library.resolve(area, raw_text='Incarnam', combat=False) == expected
 
 
 def test_ci_runs_only_on_main_and_pull_requests():
@@ -76,6 +113,7 @@ def test_builder_keeps_music_directory_in_zip(tmp_path):
     (release_dir / 'Musiques').mkdir()
     (release_dir / 'Dofusic.exe').write_bytes(b'exe')
     (release_dir / 'Data' / 'runtime.bin').write_bytes(b'data')
+    (release_dir / 'Musiques' / 'Incarnam.opus').write_bytes(b'OggS')
     output = tmp_path / 'Dofusic.zip'
 
     builder._make_zip(release_dir, output)
@@ -85,6 +123,7 @@ def test_builder_keeps_music_directory_in_zip(tmp_path):
     assert 'Dofusic/Musiques/' in names
     assert 'Dofusic/Dofusic.exe' in names
     assert 'Dofusic/Data/runtime.bin' in names
+    assert 'Dofusic/Musiques/Incarnam.opus' in names
 
 
 def test_readme_has_no_signpath_or_obsolete_checksum_companion_instructions():

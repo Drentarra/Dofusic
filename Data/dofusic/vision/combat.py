@@ -218,6 +218,12 @@ class CombatStateTracker:
         self._candidate: bool | None = None
         self._candidate_count = 0
 
+    def reset(self) -> None:
+        """Réinitialiser un cycle de détection, sans recréer le tracker."""
+        self.in_combat = False
+        self._candidate = None
+        self._candidate_count = 0
+
     def update(self, observation: CombatObservation) -> bool | None:
         observed = observation.in_combat
         if observed is None or observation.confidence < self.min_confidence:

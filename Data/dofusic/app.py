@@ -179,6 +179,7 @@ class DofusicController:
             idle_refresh_sec=self.config.position_ocr_idle_refresh_sec,
         )
         self.combat_tracker = CombatStateTracker(required_confirmations=3, initial_state=False)
+        self._combat_suspended_for_dungeon = False
         # Online music is a temporary audio override only. OCR/location continue
         # normally and keep this desired local track up to date underneath it.
         self._audio_override_active = False
@@ -272,7 +273,8 @@ class DofusicController:
             self.decision.confirmed_key = ''
         except Exception:
             pass
-        self.combat_tracker = CombatStateTracker(required_confirmations=3, initial_state=False)
+        self.combat_tracker.reset()
+        self._combat_suspended_for_dungeon = False
 
     def _stop_automatic_runtime(self) -> None:
         was_active = bool(getattr(self, '_automatic_runtime_active', False))
@@ -594,6 +596,12 @@ class DofusicController:
             self.state.status = 'Retour à la musique Dofus'
         return changed
 
+    def _is_dungeon_context(self, location: LocationRecord | None = None) -> bool:
+        """Classifier uniquement le lieu confirmé; garder le dernier contexte pendant une occultation."""
+        target = getattr(self, 'current_location', None) if location is None else location
+        catalog = getattr(getattr(self, 'music_library', None), 'dungeon_catalog', None)
+        return bool(target is not None and catalog is not None and catalog.is_dungeon(target))
+
     def _play_location(
         self,
         location: LocationRecord,
@@ -604,19 +612,35 @@ class DofusicController:
         # One-way boundary: only an already-confirmed location reaches the music library.
         # Combat is an audio mode of that same confirmed context, not another resolver.
         self.state.place = location.name
+        in_dungeon = self._is_dungeon_context(location)
+        combat = bool(self.state.in_combat and not in_dungeon)
+        self.state.in_combat = combat
         track = self.music_library.resolve(
             location,
             raw_text=raw_text,
-            combat=self.state.in_combat,
-            new_generic_cycle=new_generic_cycle,
+            combat=combat,
+            new_generic_cycle=new_generic_cycle and not in_dungeon,
         )
-        mode = 'combat' if self.state.in_combat else 'exploration'
+        mode = 'combat' if combat else 'exploration'
         self._play_track(track, status=f'Lieu confirmé : {location.name} ({mode})')
         if track is None:
             # Even with no audio file, the UI still has a stable user-facing context.
             self.state.display_theme = location.parent_area_name or location.name
 
     def _update_combat_from_toolbar(self, toolbar: np.ndarray | None) -> None:
+        # En donjon, le contexte positif fait foi : aucun besoin d'analyser
+        # une barre temporairement cachée ni de toucher au pipeline audio.
+        if self._is_dungeon_context():
+            if not getattr(self, '_combat_suspended_for_dungeon', False):
+                self.combat_tracker.reset()
+                self._combat_suspended_for_dungeon = True
+            self.state.in_combat = False
+            self.state.combat_confidence = 0.0
+            return
+
+        if getattr(self, '_combat_suspended_for_dungeon', False):
+            self.combat_tracker.reset()
+            self._combat_suspended_for_dungeon = False
         observation = analyze_combat_toolbar(toolbar, self.hud_geometry)
         self.state.combat_confidence = float(observation.confidence)
         transition = self.combat_tracker.update(observation)
