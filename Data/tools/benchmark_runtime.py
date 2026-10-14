@@ -36,10 +36,19 @@ def _rss_bytes() -> int | None:
 
     counts = Counters()
     counts.cb = ctypes.sizeof(counts)
-    ok = ctypes.windll.psapi.GetProcessMemoryInfo(
-        ctypes.windll.kernel32.GetCurrentProcess(), ctypes.byref(counts), counts.cb,
+    kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    psapi = ctypes.WinDLL('psapi', use_last_error=True)
+    psapi.GetProcessMemoryInfo.argtypes = (
+        wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD,
     )
-    return int(counts.WorkingSetSize) if ok else None
+    psapi.GetProcessMemoryInfo.restype = wintypes.BOOL
+    ok = psapi.GetProcessMemoryInfo(
+        kernel32.GetCurrentProcess(), ctypes.byref(counts), counts.cb,
+    )
+    if not ok:
+        raise OSError(ctypes.get_last_error(), 'GetProcessMemoryInfo a échoué')
+    return int(counts.WorkingSetSize)
 
 
 def _timed(fn, count: int) -> dict[str, object]:
