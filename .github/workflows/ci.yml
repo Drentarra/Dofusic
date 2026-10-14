@@ -34,6 +34,11 @@ jobs:
           python -m pip install -r Data/requirements-lock.txt
           python -m pip install --no-deps rapidocr==3.9.2
           python -c "import importlib.metadata as m; d={x.metadata.get('Name','').lower() for x in m.distributions()}; assert 'opencv-python' not in d, 'opencv-python installed twice'; assert 'opencv-python-headless' in d, 'opencv-python-headless missing'"
+      - name: Audit every Python source and test file
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python Data/tools/audit_sources.py --output Audit/source_inventory.json --summary Audit/SOURCES.md
       - name: Run tests
         run: |
           $ErrorActionPreference = "Stop"
@@ -92,6 +97,8 @@ jobs:
             Audit/reference.json
             Audit/candidate.json
             Audit/COMPARAISON.md
+            Audit/source_inventory.json
+            Audit/SOURCES.md
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
