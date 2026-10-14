@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Tag existant à compiler et publier (ex. v1.0.6). Vide : compilation seule.'
+        description: 'Tag existant à publier (ex. v1.0.12). Vide : construire et vérifier uniquement, sans publier.'
         required: false
         default: ''
         type: string
@@ -210,8 +210,13 @@ jobs:
                   '--draft=false', '--latest',
               ], check=True)
           else:
+              notes_file = f'.github/RELEASE_NOTES_{tag}.md'
+              notes_args = (
+                  ['--notes-file', notes_file]
+                  if os.path.isfile(notes_file) else ['--generate-notes']
+              )
               subprocess.run([
                   'gh', 'release', 'create', tag, '--repo', repo, '--verify-tag',
-                  '--title', f'Dofusic {tag}', '--generate-notes', '--latest',
+                  '--title', f'Dofusic {tag}', *notes_args, '--latest',
                   'Release/Dofusic.zip',
               ], check=True)
