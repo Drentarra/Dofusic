@@ -138,15 +138,33 @@ class OCRWorkerClient:
     def start(self) -> None:
         if self.alive:
             return
+        if self._process is not None:
+            # A crashed worker leaves its queues behind. Clean them before
+            # replacing the process; repeated crashes must not leak handles.
+            self.close(timeout=0.0)
+            if self._process is not None:
+                return
         self._requests = self._ctx.Queue(maxsize=1)
         self._events = self._ctx.Queue(maxsize=8)
-        self._process = self._ctx.Process(
-            target=_worker_main,
-            args=(self.channel, self._requests, self._events, self.cpu_threads),
-            name=f'DofusicOCR-{self.channel}',
-            daemon=True,
-        )
-        self._process.start()
+        try:
+            process = self._ctx.Process(
+                target=_worker_main,
+                args=(self.channel, self._requests, self._events, self.cpu_threads),
+                name=f'DofusicOCR-{self.channel}',
+                daemon=True,
+            )
+            process.start()
+        except Exception:
+            # start() may fail before a child exists. In that case join() is
+            # invalid, but both queues still own native handles.
+            for channel_queue in (self._requests, self._events):
+                if channel_queue is not None:
+                    channel_queue.cancel_join_thread()
+                    channel_queue.close()
+            self._requests = None
+            self._events = None
+            raise
+        self._process = process
 
     def submit(self, image: np.ndarray, captured_at: float | None = None) -> int | None:
         """Submit one OCR request without evicting any already queued request."""
