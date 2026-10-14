@@ -15,6 +15,8 @@ import numpy as np
 
 _LOG = logging.getLogger('dofusic.audio.player')
 _LOUDNESS_CACHE_LIMIT = 128
+_SPECTRUM_CACHE_LIMIT_BYTES = 16 * 1024 * 1024
+_SPECTRUM_CACHE_LIMIT_ITEMS = 8
 
 SPECTRUM_BANDS = 24
 SPECTRUM_FPS = 15
@@ -282,13 +284,16 @@ class MusicPlayer:
             if self.spectrum_enabled:
                 self._spectrum_frames = np.asarray(frames, dtype=np.float32)
                 self._spectrum_duration_ms = float(duration_ms)
-                self._spectrum_cache[path] = (self._spectrum_frames, self._spectrum_duration_ms)
-                # Bound memory while still making common zone revisits instant.
-                while len(self._spectrum_cache) > 8:
-                    oldest = next(iter(self._spectrum_cache))
-                    if oldest == path and len(self._spectrum_cache) > 1:
-                        oldest = next(key for key in self._spectrum_cache if key != path)
-                    self._spectrum_cache.pop(oldest, None)
+                # Number of tracks alone is not a memory bound: one long
+                # track can hold millions of FFT values. Keep a byte budget.
+                self._spectrum_cache.pop(path, None)
+                if self._spectrum_frames.nbytes <= _SPECTRUM_CACHE_LIMIT_BYTES:
+                    self._spectrum_cache[path] = (self._spectrum_frames, self._spectrum_duration_ms)
+                while (
+                    len(self._spectrum_cache) > _SPECTRUM_CACHE_LIMIT_ITEMS
+                    or sum(value[0].nbytes for value in self._spectrum_cache.values()) > _SPECTRUM_CACHE_LIMIT_BYTES
+                ):
+                    self._spectrum_cache.pop(next(iter(self._spectrum_cache)))
             else:
                 self._spectrum_frames = np.zeros((0, SPECTRUM_BANDS), dtype=np.float32)
                 self._spectrum_duration_ms = 0.0

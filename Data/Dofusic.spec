@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller onedir slim pour Dofusic V25.1 ECO.
+"""PyInstaller onedir slim pour Dofusic portable Windows x64.
 
 Principe : ne jamais collecter des paquets entiers par confort. PyInstaller suit
 le graphe d'import du programme, tandis que nous ajoutons seulement les donnees

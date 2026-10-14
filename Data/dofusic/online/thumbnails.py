@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import threading
 import time
 from pathlib import Path
 from urllib.request import Request, urlopen
@@ -48,6 +49,7 @@ class ThumbnailService:
         self.max_items = max(16, int(max_items))
         self.timeout = max(1.0, float(timeout))
         self._key_locks = KeyedLockPool()
+        self._prune_lock = threading.Lock()
 
     @property
     def active_lock_count(self) -> int:
@@ -68,24 +70,35 @@ class ThumbnailService:
             return False
 
     def _prune(self, *, keep: Path) -> None:
-        try:
-            files = [p for p in self.cache_dir.glob('*.png') if p.is_file()]
+        # Several thumbnails can finish on different workers. Only one prune
+        # may change the directory at a time, and no producer's target is
+        # deleted while it is being written or read.
+        with self._prune_lock:
+            active_names = self._key_locks.active_keys
+            try:
+                files = [path for path in self.cache_dir.glob('*.png') if path.is_file()]
+            except OSError:
+                return
             if len(files) <= self.max_items:
                 return
-            files.sort(key=lambda p: p.stat().st_mtime)
+            try:
+                files.sort(key=lambda path: path.stat().st_mtime)
+                keep_path = keep.resolve()
+            except OSError:
+                return
             extra = len(files) - self.max_items
             for path in files:
                 if extra <= 0:
                     break
+                if path.name in active_names:
+                    continue
                 try:
-                    if path.resolve() == keep.resolve():
+                    if path.resolve() == keep_path:
                         continue
                     path.unlink()
                     extra -= 1
                 except OSError:
                     continue
-        except OSError:
-            return
 
     def _decode_png(self, raw: bytes, size: tuple[int, int]) -> bytes:
         if not raw or len(raw) > _MAX_DOWNLOAD_BYTES:

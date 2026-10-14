@@ -239,7 +239,7 @@ def _write_size_report(release_dir: Path, zip_path: Path, report_path: Path) -> 
     entries.sort(reverse=True)
 
     lines = [
-        'DOFUSIC V25.1 ECO - BUILD SIZE REPORT',
+        'DOFUSIC - PORTABLE BUILD SIZE REPORT',
         '=================================',
         '',
         f'Taille decompressee : {_human_size(total)} ({total} octets)',

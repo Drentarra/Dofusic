@@ -1,4 +1,4 @@
-# Dofusic V25.1 ECO — portable Windows x64
+# Dofusic 1.0.12 — portable Windows x64
 
 Dofusic détecte automatiquement la zone et la position de **Dofus.exe** par OCR, puis joue les musiques locales associées. La musique online est optionnelle et utilise un moteur léger basé sur **yt-dlp** : aucun navigateur intégré, aucune session YouTube, aucun compte et aucun cookie ne sont nécessaires.
 
@@ -8,7 +8,7 @@ La release finale contient `Dofusic.exe`, `Data/`, `Musiques/` et les fichiers n
 
 Le mode local/OCR fonctionne hors ligne. Internet n'est utilisé que pour la recherche, les suggestions et la récupération de musique online.
 
-## Architecture V25
+## Architecture
 
 - OCR zone : RapidOCR / ONNX Runtime avec **PP-OCRv6 Small** uniquement en temps réel.
 - OCR position : pipeline dédié et léger.
@@ -41,7 +41,7 @@ Lors d'une migration depuis une ancienne version, l'ancien profil `Data/UserData
 
 Pour Reddit ou un autre partage public, distribuer **uniquement le ZIP généré par le builder**, pas le dossier `.portable-build/`, ni les caches/tests de développement. L'utilisateur extrait le ZIP dans un dossier inscriptible puis lance `Dofusic.exe`.
 
-## Profil ECO V25.1
+## Profil économe en ressources
 
 - Capture Dofus : 10 FPS.
 - Rafraîchissement UI : 80 ms.
