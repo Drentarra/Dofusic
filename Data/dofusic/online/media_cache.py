@@ -251,13 +251,28 @@ class MediaCache:
         _LOG.info('[MUSIC][MEDIA] save start id=%s title=%r', track.video_id, track.title)
         source = self.ensure_cached(track)
         stem = sanitize_filename(desired_name, fallback=track.title or 'Musique')
-        target = self.music_dir / f'{stem}{source.suffix.lower()}'
-        counter = 2
-        while target.exists():
-            target = self.music_dir / f'{stem} ({counter}){source.suffix.lower()}'
-            counter += 1
-        shutil.copy2(source, target)
+        suffix = source.suffix.lower()
+        counter = 1
+        while True:
+            candidate = stem if counter == 1 else f'{stem} ({counter})'
+            target = self.music_dir / f'{candidate}{suffix}'
+            try:
+                # Exclusive creation prevents two concurrent download requests
+                # from silently overwriting the same music-library entry.
+                with target.open('xb') as output, source.open('rb') as incoming:
+                    shutil.copyfileobj(incoming, output, length=1024 * 1024)
+                break
+            except FileExistsError:
+                counter += 1
+            except Exception:
+                # Remove incomplete outputs, without replacing an existing file.
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         try:
+            shutil.copystat(source, target)
             os.utime(source, None)
         except OSError:
             pass
