@@ -180,7 +180,8 @@ class OCRWorkerClient:
 
     def restart(self) -> None:
         self.close(timeout=0.5)
-        self.start()
+        if not self.alive:
+            self.start()
 
     def close(self, *, timeout: float = 1.5) -> None:
         process = self._process
@@ -202,6 +203,15 @@ class OCRWorkerClient:
         if process.is_alive():
             process.terminate()
             process.join(timeout=0.5)
+        if process.is_alive():
+            # A running process still owns its queues; do not orphan it or
+            # start another OCR engine over the same channel.
+            return
         self._process = None
+        for channel_queue in (self._requests, self._events):
+            if channel_queue is None:
+                continue
+            channel_queue.close()
+            channel_queue.join_thread()
         self._requests = None
         self._events = None
