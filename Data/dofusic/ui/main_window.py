@@ -770,6 +770,8 @@ class MainWindow:
             self._update_local_return_button()
             self._render_overlay(state)
         except Exception:
+            # Keep Tk alive but preserve the traceback for diagnostics.
+            self.controller.logger.exception('Erreur pendant le rafraîchissement de l’interface')
             self.overlay.hide()
             palette = getattr(self, 'palette', get_theme('emerald'))
             self._set_widget('window', self.window_indicator, text='Erreur Dofusic', fg=palette.text)
