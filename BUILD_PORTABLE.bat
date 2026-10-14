@@ -38,7 +38,7 @@ set "UV_PYTHON_INSTALL_REGISTRY=0"
 cd /d "%ROOT%"
 
 echo ==========================================================
-echo          DOFUSIC V25.1 ECO - BUILD PORTABLE WINDOWS X64
+echo          DOFUSIC 1.0.12 - BUILD PORTABLE WINDOWS X64
 echo ==========================================================
 echo.
 echo Architecture du builder :
