@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import re
@@ -11,6 +12,9 @@ from typing import Callable
 
 import numpy as np
 
+
+_LOG = logging.getLogger('dofusic.audio.player')
+_LOUDNESS_CACHE_LIMIT = 128
 
 SPECTRUM_BANDS = 24
 SPECTRUM_FPS = 15
@@ -184,15 +188,26 @@ class MusicPlayer:
         self._spectrum_generation = 0
         self._spectrum_cache: dict[Path, tuple[np.ndarray, float]] = {}
         self._loudness_gain_by_path: dict[Path, float] = {}
+        self._loudness_cache_lock = threading.Lock()
         self._current_loudness_gain = 1.0
         self._analysis_thread: threading.Thread | None = None
         self._analysis_jobs: queue.Queue[tuple[Path, int] | None] = queue.Queue(maxsize=1)
         self._analysis_stop = threading.Event()
+        self._spectrum_process_lock = threading.Lock()
+        self._spectrum_process: subprocess.Popen | None = None
         self._loudness_generation = 0
         self._loudness_lock = threading.Lock()
         self._loudness_thread: threading.Thread | None = None
         self._loudness_process: subprocess.Popen | None = None
         self._playback_fallback_path: Path | None = None
+
+    def _remember_loudness_gain(self, path: Path, gain: float) -> None:
+        """Keep normalization reuse bounded during long online-music sessions."""
+        with self._loudness_cache_lock:
+            self._loudness_gain_by_path.pop(path, None)
+            self._loudness_gain_by_path[path] = float(gain)
+            while len(self._loudness_gain_by_path) > _LOUDNESS_CACHE_LIMIT:
+                self._loudness_gain_by_path.pop(next(iter(self._loudness_gain_by_path)))
 
     def initialize(self) -> bool:
         if self._ready:
@@ -262,7 +277,7 @@ class MusicPlayer:
             if generation != self._spectrum_generation or self.current != path:
                 return
             measured_gain = float(loudness_gain)
-            self._loudness_gain_by_path[path] = measured_gain
+            self._remember_loudness_gain(path, measured_gain)
             self._current_loudness_gain = measured_gain if self.normalize_loudness else 1.0
             if self.spectrum_enabled:
                 self._spectrum_frames = np.asarray(frames, dtype=np.float32)
@@ -278,6 +293,16 @@ class MusicPlayer:
                 self._spectrum_frames = np.zeros((0, SPECTRUM_BANDS), dtype=np.float32)
                 self._spectrum_duration_ms = 0.0
         self._apply_effective_volume()
+
+    def _terminate_spectrum_process(self) -> None:
+        """Interrupt a decoder that may still be blocked on its stdout pipe."""
+        with self._spectrum_process_lock:
+            process = self._spectrum_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                _LOG.exception('Arrêt du décodeur audio impossible')
 
     def _analyze_spectrum_worker(self, path: Path, generation: int) -> None:
         if not self._ready or self._pygame is None:
@@ -304,6 +329,11 @@ class MusicPlayer:
                 flags |= getattr(subprocess, 'BELOW_NORMAL_PRIORITY_CLASS', 0)
                 kwargs['creationflags'] = flags
             process = subprocess.Popen(command, **kwargs)
+            with self._spectrum_process_lock:
+                self._spectrum_process = process
+            if self._analysis_stop.is_set():
+                self._terminate_spectrum_process()
+                return
             assert process.stdout is not None
 
             energy_sum = 0.0
@@ -366,6 +396,9 @@ class MusicPlayer:
                         process.kill()
                     except Exception:
                         pass
+            with self._spectrum_process_lock:
+                if self._spectrum_process is process:
+                    self._spectrum_process = None
 
     def _queue_latest_analysis(self, job: tuple[Path, int] | None) -> None:
         try:
@@ -473,10 +506,11 @@ class MusicPlayer:
             with self._loudness_lock:
                 if generation != self._loudness_generation or self.current != path:
                     return
-                self._loudness_gain_by_path[path] = gain
+                self._remember_loudness_gain(path, gain)
                 self._current_loudness_gain = gain if self.normalize_loudness else 1.0
             self._apply_effective_volume()
         except Exception:
+            _LOG.exception('Impossible de mesurer le niveau sonore: %s', path)
             return
         finally:
             with self._loudness_lock:
@@ -606,6 +640,12 @@ class MusicPlayer:
         try:
             if self.current:
                 self._pygame.mixer.music.fadeout(self.fade_ms)
+            # A previous analysis is independent from pygame playback and
+            # must not keep decoding the old track after a music transition.
+            self._terminate_spectrum_process()
+            with self._loudness_lock:
+                self._loudness_generation += 1
+            self._terminate_loudness_process()
             self._current_loudness_gain = self._loudness_gain_by_path.get(target, 1.0)
             loaded_path = target
             try:
@@ -639,6 +679,10 @@ class MusicPlayer:
             self._spectrum_duration_ms = 0.0
         self.current = None
         self._current_loudness_gain = 1.0
+        self._terminate_spectrum_process()
+        with self._loudness_lock:
+            self._loudness_generation += 1
+        self._terminate_loudness_process()
         if not self._ready or self._pygame is None:
             return
         try:
@@ -664,6 +708,7 @@ class MusicPlayer:
             self._spectrum_frames = np.zeros((0, SPECTRUM_BANDS), dtype=np.float32)
             self._spectrum_duration_ms = 0.0
         self._analysis_stop.set()
+        self._terminate_spectrum_process()
         self._queue_latest_analysis(None)
         with self._loudness_lock:
             self._loudness_generation += 1

@@ -3,7 +3,16 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
+import re
 from typing import Literal
+
+
+_VIDEO_ID_RE = re.compile(r'^[A-Za-z0-9_-]{11}$')
+
+
+def valid_video_id(value: str) -> bool:
+    """Only a standard YouTube video identifier may enter cache paths/URLs."""
+    return bool(_VIDEO_ID_RE.fullmatch(str(value or '')))
 
 
 @dataclass(frozen=True, slots=True)

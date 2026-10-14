@@ -4,10 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Tag existant à compiler et publier (ex. v1.0.6). Vide : compilation seule.'
+        description: 'Tag existant à publier (ex. v1.0.12). Vide : construire et vérifier uniquement, sans publier.'
         required: false
         default: ''
         type: string
+      create_tag_from_main:
+        description: 'Créer le tag depuis le commit vérifié de main, puis publier. À cocher pour une nouvelle version.'
+        required: false
+        default: false
+        type: boolean
   push:
     tags:
       - "v*"
@@ -37,13 +42,26 @@ jobs:
           import os
           import re
           if not re.fullmatch(r'v[A-Za-z0-9][A-Za-z0-9._-]*', os.environ['RELEASE_TAG']):
-              raise ValueError('Expected a release tag such as v1.0.6')
+              raise ValueError('Expected a release tag such as v1.0.12')
+
+      - name: Validate new release request
+        if: github.event_name == 'workflow_dispatch' && inputs.create_tag_from_main
+        shell: python
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          import os
+          if not os.environ['RELEASE_TAG']:
+              raise ValueError('Indiquez le tag de la nouvelle version, par exemple v1.0.12')
+          if os.environ['GITHUB_REF'] != 'refs/heads/main':
+              raise ValueError('La création d’un nouveau tag est autorisée uniquement depuis main')
 
       - name: Checkout sources
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          ref: ${{ inputs.create_tag_from_main && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
 
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -104,7 +122,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          ref: ${{ inputs.create_tag_from_main && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
 
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -167,6 +185,22 @@ jobs:
           compression-level: 0
           retention-days: 30
 
+      - name: Create verified release tag from main
+        if: github.event_name == 'workflow_dispatch' && inputs.create_tag_from_main
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          VERIFIED_COMMIT: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          # This happens only after the ZIP, SBOM, checksums, and provenance pass.
+          # GitHub's GITHUB_TOKEN does not trigger a second tag-push workflow.
+          gh api -X POST "repos/$env:GH_REPO/git/refs" -f "ref=refs/tags/$env:RELEASE_TAG" -f "sha=$env:VERIFIED_COMMIT"
+          if ($LASTEXITCODE -ne 0) { throw "Le tag existe déjà ou sa création a échoué." }
+
       - name: Publish GitHub release
         if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
         shell: python
@@ -210,8 +244,13 @@ jobs:
                   '--draft=false', '--latest',
               ], check=True)
           else:
+              notes_file = f'.github/RELEASE_NOTES_{tag}.md'
+              notes_args = (
+                  ['--notes-file', notes_file]
+                  if os.path.isfile(notes_file) else ['--generate-notes']
+              )
               subprocess.run([
                   'gh', 'release', 'create', tag, '--repo', repo, '--verify-tag',
-                  '--title', f'Dofusic {tag}', '--generate-notes', '--latest',
+                  '--title', f'Dofusic {tag}', *notes_args, '--latest',
                   'Release/Dofusic.zip',
               ], check=True)

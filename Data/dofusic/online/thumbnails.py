@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import io
 import os
-import threading
 import time
 from pathlib import Path
 from urllib.request import Request, urlopen
 
 from PIL import Image, ImageOps
 
-from dofusic.online.models import OnlineTrack
+from dofusic.online.models import OnlineTrack, valid_video_id
+from dofusic.online.keyed_locks import KeyedLockPool
 
 
 _MAX_DOWNLOAD_BYTES = 3 * 1024 * 1024
@@ -48,36 +47,14 @@ class ThumbnailService:
         self._fetcher = fetcher or _fetch_url
         self.max_items = max(16, int(max_items))
         self.timeout = max(1.0, float(timeout))
-        self._locks_guard = threading.Lock()
-        self._locks: dict[str, tuple[threading.Lock, int]] = {}
+        self._key_locks = KeyedLockPool()
 
     @property
     def active_lock_count(self) -> int:
-        with self._locks_guard:
-            return len(self._locks)
+        return self._key_locks.active_count
 
-    @contextmanager
     def _key_lock(self, key: str):
-        with self._locks_guard:
-            entry = self._locks.get(key)
-            if entry is None:
-                lock, users = threading.Lock(), 0
-            else:
-                lock, users = entry
-            self._locks[key] = (lock, users + 1)
-        lock.acquire()
-        try:
-            yield
-        finally:
-            lock.release()
-            with self._locks_guard:
-                current = self._locks.get(key)
-                if current is not None and current[0] is lock:
-                    users = current[1] - 1
-                    if users <= 0:
-                        self._locks.pop(key, None)
-                    else:
-                        self._locks[key] = (lock, users)
+        return self._key_locks.hold(key)
 
     def _path(self, track: OnlineTrack, size: tuple[int, int]) -> Path:
         width, height = size
@@ -125,6 +102,8 @@ class ThumbnailService:
             return b''
 
     def get_png(self, track: OnlineTrack, *, size: tuple[int, int] = (112, 63)) -> bytes:
+        if not valid_video_id(track.video_id):
+            return b''
         target = self._path(track, size)
         key = target.name
         with self._key_lock(key):

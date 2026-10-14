@@ -9,7 +9,7 @@ import time
 from typing import Callable
 
 from dofusic.online.errors import MediaCacheError, MediaErrorCode
-from dofusic.online.models import OnlineTrack
+from dofusic.online.models import OnlineTrack, valid_video_id
 
 
 _LOG = logging.getLogger('dofusic.music.retrieval')
@@ -143,6 +143,8 @@ class YouTubeAudioFetcher:
         return path
 
     def fetch(self, track: OnlineTrack) -> Path:
+        if not valid_video_id(track.video_id):
+            raise MediaCacheError('Identifiant de vidéo YouTube invalide', code=MediaErrorCode.UNAVAILABLE)
         last_error: MediaCacheError | None = None
         for attempt in range(2):
             try:

@@ -154,6 +154,8 @@ class DofusicController:
         self.started = False
         self.next_confirmation_at = 0.0
         self.last_capture_seen_at = 0.0
+        self._last_capture_error = ''
+        self._last_capture_error_log_at = 0.0
         self.unknown_since: float | None = None
         self.current_location: LocationRecord | None = None
         self.last_evidence: LocationEvidence | None = None
@@ -1002,7 +1004,14 @@ class DofusicController:
             return self.state
         self._last_capture_sequence = snapshot.sequence
         if snapshot.error:
-            self.logger.warning('Capture Dofus: %s', snapshot.error)
+            previous_error = getattr(self, '_last_capture_error', '')
+            previous_log = float(getattr(self, '_last_capture_error_log_at', float('-inf')))
+            if snapshot.error != previous_error or now - previous_log >= 5.0:
+                self.logger.warning('Capture Dofus: %s', snapshot.error)
+                self._last_capture_error_log_at = now
+            self._last_capture_error = snapshot.error
+        else:
+            self._last_capture_error = ''
         frame = snapshot.frame
         captured_at = float(snapshot.captured_at)
 
@@ -1024,7 +1033,12 @@ class DofusicController:
 
         self.last_capture_seen_at = captured_at
         self.state.window_found = True
-        hud = extract_hud_inputs(frame.image, self.hud_geometry)
+        # The capture thread already calibrated this very frame. Reusing its
+        # transform avoids a second image-wide HUD geometry estimate per tick.
+        hud = extract_hud_inputs(
+            frame.image, self.hud_geometry,
+            transform=getattr(frame, 'hud_transform', None),
+        )
         if self.automatic_detection_unlocked:
             self._update_combat_from_toolbar(hud.combat)
 

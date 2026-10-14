@@ -17,16 +17,16 @@ def _workflow():
     return yaml.load(WORKFLOW.read_text(encoding='utf-8'), Loader=yaml.BaseLoader)
 
 
-def _publish(monkeypatch, *, status=200, upload_fails=False):
+def _publish(monkeypatch, *, status=200, upload_fails=False, tag='v1.0.6'):
     import urllib.request
 
     calls = []
     monkeypatch.setenv('GH_REPO', 'Drentarra/Dofusic')
     monkeypatch.setenv('GH_TOKEN', 'test-token')
-    monkeypatch.setenv('RELEASE_TAG', 'v1.0.6')
+    monkeypatch.setenv('RELEASE_TAG', tag)
 
     def read_release(request, **kwargs):
-        assert request.full_url == 'https://api.github.com/repos/Drentarra/Dofusic/releases/tags/v1.0.6'
+        assert request.full_url == f'https://api.github.com/repos/Drentarra/Dofusic/releases/tags/{tag}'
         assert request.get_header('Authorization') == 'Bearer test-token'
         if status != 200:
             raise HTTPError(request.full_url, status, 'API error', {}, None)
@@ -41,7 +41,7 @@ def _publish(monkeypatch, *, status=200, upload_fails=False):
 
     monkeypatch.setattr(urllib.request, 'urlopen', read_release)
     monkeypatch.setattr(subprocess, 'run', run)
-    step = next(s for s in _workflow()['jobs']['release-windows']['steps'] if 'RELEASE_TAG' in s.get('env', {}))
+    step = next(s for s in _workflow()['jobs']['release-windows']['steps'] if s['name'] == 'Publish GitHub release')
     return step['run'], calls
 
 
@@ -93,7 +93,7 @@ def test_manual_recovery_builds_the_tag_and_keeps_attestation(monkeypatch):
         checkout = next(s for s in job['steps'] if s.get('uses', '').startswith('actions/checkout@'))
         assert "format('refs/tags/{0}', inputs.release_tag)" in checkout['with']['ref']
     attest = next(s for s in final['steps'] if s['name'] == 'Attest final public ZIP')
-    publish = next(s for s in final['steps'] if 'RELEASE_TAG' in s.get('env', {}))
+    publish = next(s for s in final['steps'] if s['name'] == 'Publish GitHub release')
     assert attest['if'] == publish['if']
     assert "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" in publish['if']
     assert "github.event_name == 'workflow_dispatch' && inputs.release_tag != ''" in publish['if']
@@ -114,3 +114,39 @@ def test_invalid_manual_tag_is_rejected(monkeypatch, tag):
     step = next(s for s in _workflow()['jobs']['build-windows']['steps'] if s['name'] == 'Validate requested release tag')
     with pytest.raises((ValueError, SystemExit)):
         exec(compile(step['run'], '<tag-validation>', 'exec'), {})
+
+
+def test_next_release_uses_reviewed_french_notes(monkeypatch):
+    code, calls = _publish(monkeypatch, status=404, tag='v1.0.12')
+    exec(compile(code, '<publication-step>', 'exec'), {})
+    assert len(calls) == 1
+    assert '--notes-file' in calls[0]
+    assert '.github/RELEASE_NOTES_v1.0.12.md' in calls[0]
+    assert '--generate-notes' not in calls[0]
+    assert (WORKFLOW.parent.parent / 'RELEASE_NOTES_v1.0.12.md').is_file()
+
+
+def test_manual_publish_from_main_creates_tag_after_verifying_the_portable():
+    workflow = _workflow()
+    inputs = workflow['on']['workflow_dispatch']['inputs']
+    assert inputs['create_tag_from_main']['default'] == 'false'
+    build = workflow['jobs']['build-windows']['steps']
+    final = workflow['jobs']['release-windows']['steps']
+
+    validation = next(s for s in build if s['name'] == 'Validate new release request')
+    assert "refs/heads/main" in validation['run']
+    assert "inputs.create_tag_from_main" in validation['if']
+
+    for job in (build, final):
+        checkout = next(s for s in job if s['name'] == 'Checkout sources')
+        assert 'inputs.create_tag_from_main && github.sha' in checkout['with']['ref']
+        assert "format('refs/tags/{0}', inputs.release_tag)" in checkout['with']['ref']
+
+    names = [step['name'] for step in final]
+    tag_step = next(s for s in final if s['name'] == 'Create verified release tag from main')
+    assert names.index('Generate and validate installed build environment SBOM') < names.index(tag_step['name'])
+    assert names.index('Upload verification artifact') < names.index(tag_step['name'])
+    assert names.index(tag_step['name']) < names.index('Publish GitHub release')
+    assert "inputs.create_tag_from_main" in tag_step['if']
+    assert 'refs/tags/$env:RELEASE_TAG' in tag_step['run']
+    assert '$env:VERIFIED_COMMIT' in tag_step['run']

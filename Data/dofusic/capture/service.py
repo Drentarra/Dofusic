@@ -58,8 +58,17 @@ class CaptureService:
     def _run(self) -> None:
         backend: CaptureBackend | None = None
         try:
-            backend = self._backend_factory()
             while not self._stop.is_set():
+                if backend is None:
+                    try:
+                        backend = self._backend_factory()
+                    except Exception as exc:
+                        # A temporary MSS/Win32 initialization failure must not
+                        # require closing and reopening Dofus to recover.
+                        self._publish(None, time.monotonic(), f'{type(exc).__name__}: {exc}')
+                        self._stop.wait(1.0)
+                        continue
+
                 cycle_started = time.monotonic()
                 try:
                     frame = backend.capture()
@@ -69,8 +78,6 @@ class CaptureService:
                 remaining = self._period - (time.monotonic() - cycle_started)
                 if remaining > 0:
                     self._stop.wait(remaining)
-        except Exception as exc:
-            self._publish(None, time.monotonic(), f'{type(exc).__name__}: {exc}')
         finally:
             if backend is not None:
                 try:
@@ -91,7 +98,10 @@ class CaptureService:
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(0.0, float(timeout)))
-        self._thread = None
+        # A slow Win32 grab may outlive the join timeout. Keep its reference:
+        # start() must never launch a second capture thread over the same backend.
+        if thread is None or not thread.is_alive():
+            self._thread = None
 
 
 class DirectCaptureService:

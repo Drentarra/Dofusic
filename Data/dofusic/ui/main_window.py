@@ -502,6 +502,8 @@ class MainWindow:
             pass
         self._update_music_entry_state()
         self._last_rendered.clear()
+        # A theme repaint invalidates the previous per-bar canvas styling.
+        self._visualizer_last_drawn = {}
         if self._last_state is not None:
             self._render_state(self._last_state)
 
@@ -635,6 +637,10 @@ class MainWindow:
         if len(previous) != len(bars):
             previous = [0.0] * len(bars)
         smoothed: list[float] = []
+        palette = getattr(self, 'palette', None)
+        if palette is None:
+            palette = get_theme('emerald')
+        drawn = getattr(self, '_visualizer_last_drawn', {})
         for index, bar in enumerate(bars):
             target = values[index] if index < len(values) else 0.0
             old = previous[index]
@@ -644,10 +650,14 @@ class MainWindow:
                 level = 0.0
             smoothed.append(level)
             height = 2 + int(round(level * (self._visualizer_max_height - 2)))
+            color = palette.track_active if level >= 0.10 else palette.visualizer_idle
+            if drawn.get(bar) == (height, color):
+                continue
             x1, _y1, x2, _y2 = self.canvas.coords(bar)
             self.canvas.coords(bar, x1, self._visualizer_baseline - height, x2, self._visualizer_baseline)
-            palette = getattr(self, 'palette', get_theme('emerald'))
-            self.canvas.itemconfigure(bar, fill=palette.track_active if level >= 0.10 else palette.visualizer_idle)
+            self.canvas.itemconfigure(bar, fill=color)
+            drawn[bar] = (height, color)
+        self._visualizer_last_drawn = drawn
         self._visualizer_display_levels = smoothed
 
     def _visualizer_tick(self) -> None:
@@ -665,7 +675,10 @@ class MainWindow:
             self._redraw_visualizer((0.0,) * VISUALIZER_BANDS)
         finally:
             if not getattr(self, '_closed', False):
-                self.root.after(VISUALIZER_INTERVAL_MS, self._visualizer_tick)
+                try:
+                    self.root.after(VISUALIZER_INTERVAL_MS, self._visualizer_tick)
+                except tk.TclError:
+                    pass
 
     def _redraw_volume(self, volume: int) -> None:
         volume = max(0, min(100, int(volume)))
@@ -760,6 +773,8 @@ class MainWindow:
         )
 
     def _update(self) -> None:
+        if getattr(self, '_closed', False):
+            return
         try:
             state = self.controller.tick()
             if self.music_session is not None:
@@ -770,12 +785,19 @@ class MainWindow:
             self._update_local_return_button()
             self._render_overlay(state)
         except Exception:
+            # Keep Tk alive but preserve the traceback for diagnostics.
+            self.controller.logger.exception('Erreur pendant le rafraîchissement de l’interface')
             self.overlay.hide()
             palette = getattr(self, 'palette', get_theme('emerald'))
             self._set_widget('window', self.window_indicator, text='Erreur Dofusic', fg=palette.text)
             self._set_widget('window-dot', self.window_indicator_dot, fg=palette.red)
         finally:
-            self.root.after(self.config.ui_tick_ms, self._update)
+            if not getattr(self, '_closed', False):
+                try:
+                    self.root.after(self.config.ui_tick_ms, self._update)
+                except tk.TclError:
+                    # A close event may destroy Tk between tick() and scheduling.
+                    pass
 
     def run(self) -> None:
         self.controller.start()
@@ -784,6 +806,8 @@ class MainWindow:
         self.root.mainloop()
 
     def close(self) -> None:
+        if getattr(self, '_closed', False):
+            return
         self._closed = True
         self.config.volume = int(getattr(self.controller.player, 'volume', self.config.volume))
         self.config.mute = bool(getattr(self.controller.player, 'muted', self.config.mute))

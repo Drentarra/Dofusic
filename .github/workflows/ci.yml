@@ -50,11 +50,38 @@ jobs:
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/runtime_probe.py
           python Data/tools/prepare_models.py
+      - name: Probe OCR worker startup and shutdown
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python Data/tools/ocr_worker_probe.py
+      - name: Check out v1.0.11 for comparative benchmarks
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: v1.0.11
+          path: .audit-reference
+          persist-credentials: false
+          filter: blob:none
+          sparse-checkout: |
+            Data/dofusic
+            Data/dofus_data.sqlite
+          sparse-checkout-cone-mode: false
+      - name: Benchmark reference and candidate
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          $env:PYTHONPATH = (Resolve-Path ".audit-reference/Data").Path
+          python Data/tools/benchmark_runtime.py --db .audit-reference/Data/dofus_data.sqlite --models Data/Models --output Audit/reference.json
+          $env:PYTHONPATH = (Resolve-Path "Data").Path
+          python Data/tools/benchmark_runtime.py --db Data/dofus_data.sqlite --models Data/Models --output Audit/candidate.json
+          python Data/tools/benchmark_runtime.py --compare Audit/reference.json Audit/candidate.json --output Audit/COMPARAISON.md
+          Get-Content Audit/COMPARAISON.md
       - name: Build portable control
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/build_portable.py --root .
+          Get-Content Release/BUILD_SIZE_REPORT.txt
       - name: Upload tested Windows portable
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
@@ -62,6 +89,9 @@ jobs:
           path: |
             Release/Dofusic_V25_1_ECO_WINDOWS_X64.zip
             Release/BUILD_SIZE_REPORT.txt
+            Audit/reference.json
+            Audit/candidate.json
+            Audit/COMPARAISON.md
           if-no-files-found: error
           compression-level: 0
           retention-days: 30

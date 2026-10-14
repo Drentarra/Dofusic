@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 import logging
 import os
 import re
@@ -11,7 +10,8 @@ from pathlib import Path
 
 from dofusic.audio.library import AUDIO_EXTS
 from dofusic.online.errors import MediaCacheError, MediaErrorCode
-from dofusic.online.models import OnlineTrack
+from dofusic.online.models import OnlineTrack, valid_video_id
+from dofusic.online.keyed_locks import KeyedLockPool
 from dofusic.online.retrieval import YouTubeAudioFetcher
 
 
@@ -65,8 +65,7 @@ class MediaCache:
         self._downloader = downloader
         self._transcoder = transcoder
         self._fetcher = fetcher or YouTubeAudioFetcher(self.cache_dir)
-        self._locks_guard = threading.Lock()
-        self._locks: dict[str, tuple[threading.Lock, int]] = {}
+        self._video_locks = KeyedLockPool()
         self._prune_lock = threading.Lock()
 
 
@@ -78,6 +77,8 @@ class MediaCache:
         return f'{hours:d}:{minutes:02d}:{seconds:02d}' if hours else f'{minutes:d}:{seconds:02d}'
 
     def validate_track(self, track: OnlineTrack) -> None:
+        if not valid_video_id(track.video_id):
+            raise MediaCacheError('Identifiant de vidéo YouTube invalide', code=MediaErrorCode.UNAVAILABLE)
         duration = max(0, int(getattr(track, 'duration_seconds', 0) or 0))
         if duration > _MAX_ONLINE_DURATION_SECONDS:
             raise MediaCacheError(
@@ -88,32 +89,10 @@ class MediaCache:
 
     @property
     def active_lock_count(self) -> int:
-        with self._locks_guard:
-            return len(self._locks)
+        return self._video_locks.active_count
 
-    @contextmanager
     def _video_lock(self, video_id: str):
-        key = str(video_id or '')
-        with self._locks_guard:
-            entry = self._locks.get(key)
-            if entry is None:
-                lock, users = threading.Lock(), 0
-            else:
-                lock, users = entry
-            self._locks[key] = (lock, users + 1)
-        lock.acquire()
-        try:
-            yield
-        finally:
-            lock.release()
-            with self._locks_guard:
-                current = self._locks.get(key)
-                if current is not None and current[0] is lock:
-                    users = current[1] - 1
-                    if users <= 0:
-                        self._locks.pop(key, None)
-                    else:
-                        self._locks[key] = (lock, users)
+        return self._video_locks.hold(str(video_id or ''))
 
     @staticmethod
     def _is_valid_file(path: Path) -> bool:
@@ -233,8 +212,7 @@ class MediaCache:
         # every video that currently owns/waits on its producer lock so pruning
         # cannot delete another operation's finished source between download and
         # playback/transcode.
-        with self._locks_guard:
-            active_video_ids = {key for key, (_lock, users) in self._locks.items() if users > 0}
+        active_video_ids = self._video_locks.active_keys
         with self._prune_lock:
             try:
                 files = [path for path in self.cache_dir.iterdir() if path.is_file()]
@@ -273,13 +251,28 @@ class MediaCache:
         _LOG.info('[MUSIC][MEDIA] save start id=%s title=%r', track.video_id, track.title)
         source = self.ensure_cached(track)
         stem = sanitize_filename(desired_name, fallback=track.title or 'Musique')
-        target = self.music_dir / f'{stem}{source.suffix.lower()}'
-        counter = 2
-        while target.exists():
-            target = self.music_dir / f'{stem} ({counter}){source.suffix.lower()}'
-            counter += 1
-        shutil.copy2(source, target)
+        suffix = source.suffix.lower()
+        counter = 1
+        while True:
+            candidate = stem if counter == 1 else f'{stem} ({counter})'
+            target = self.music_dir / f'{candidate}{suffix}'
+            try:
+                # Exclusive creation prevents two concurrent download requests
+                # from silently overwriting the same music-library entry.
+                with target.open('xb') as output, source.open('rb') as incoming:
+                    shutil.copyfileobj(incoming, output, length=1024 * 1024)
+                break
+            except FileExistsError:
+                counter += 1
+            except Exception:
+                # Remove incomplete outputs, without replacing an existing file.
+                try:
+                    target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
         try:
+            shutil.copystat(source, target)
             os.utime(source, None)
         except OSError:
             pass
