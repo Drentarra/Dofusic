@@ -123,7 +123,7 @@ def test_next_release_uses_reviewed_french_notes(monkeypatch):
     assert '--notes-file' in calls[0]
     assert '.github/RELEASE_NOTES_v1.0.12.md' in calls[0]
     assert '--generate-notes' not in calls[0]
-    assert (WORKFLOW.parent / 'RELEASE_NOTES_v1.0.12.md').is_file()
+    assert (WORKFLOW.parent.parent / 'RELEASE_NOTES_v1.0.12.md').is_file()
 
 
 def test_manual_publish_from_main_creates_tag_after_verifying_the_portable():
