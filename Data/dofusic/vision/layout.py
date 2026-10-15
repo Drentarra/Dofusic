@@ -513,37 +513,43 @@ def visible_zone_text_width(image: np.ndarray, *, scale: float = 1.0) -> int | N
     if h < 8 or w < 15 or y1 <= y0:
         return None
 
-    # White/yellowish game text is contrasted against a dark stroke. Requiring
-    # both prevents bright scenery from stretching the outline arbitrarily.
-    region = image[y0:y1, :, :3]
-    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-    bright = (hsv[:, :, 2] >= 215) & (hsv[:, :, 1] <= 75)
-    near_dark = cv2.dilate(
-        (hsv[:, :, 2] <= 108).astype(np.uint8),
-        np.ones((5, 5), dtype=np.uint8),
-    ) > 0
-    columns = _remove_short_true_runs(
-        (bright & near_dark).sum(axis=0) >= 2, min_run=2,
-    )
-    first = np.flatnonzero(columns)
-    if first.size == 0 or int(first[0]) > max(24, round(38 * scale)):
-        return None
-
+    # Most zone labels are short. Analyze only the left part of the HUD;
+    # extend progressively for unusually long names, never truncate them.
+    # This avoids processing the full 1920-pixel strip on every capture.
     gap_limit = max(8, round(13 * scale))
-    last = -1
-    gap = 0
-    for x in range(w):
-        if columns[x]:
-            last = x
-            gap = 0
-        elif last >= 0:
-            gap += 1
-            if gap >= gap_limit:
-                break
-    if last < max(6, round(8 * scale)):
-        return None
-    return min(w, last + 1 + max(3, round(6 * scale)))
+    scan_width = min(w, max(256, round(512 * scale)))
+    while True:
+        region = image[y0:y1, :scan_width, :3]
+        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+        bright = (hsv[:, :, 2] >= 215) & (hsv[:, :, 1] <= 75)
+        near_dark = cv2.dilate(
+            (hsv[:, :, 2] <= 108).astype(np.uint8),
+            np.ones((5, 5), dtype=np.uint8),
+        ) > 0
+        columns = _remove_short_true_runs(
+            (bright & near_dark).sum(axis=0) >= 2, min_run=2,
+        )
+        first = np.flatnonzero(columns)
+        if first.size == 0 or int(first[0]) > max(24, round(38 * scale)):
+            return None
 
+        last = -1
+        gap = 0
+        ended = False
+        for x in range(scan_width):
+            if columns[x]:
+                last = x
+                gap = 0
+            elif last >= 0:
+                gap += 1
+                if gap >= gap_limit:
+                    ended = True
+                    break
+        if last < max(6, round(8 * scale)):
+            return None
+        if ended or scan_width >= w:
+            return min(w, last + 1 + max(3, round(6 * scale)))
+        scan_width = min(w, scan_width * 2)
 
 def extract_hud_inputs(
     image: np.ndarray,
