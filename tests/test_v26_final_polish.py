@@ -87,7 +87,7 @@ class _Library:
 def test_v26_defaults_enable_visualizer_loudness_and_audible_fades(tmp_path):
     cfg = AppConfig()
 
-    assert cfg.config_version == 26
+    assert cfg.config_version == 27
     assert cfg.show_visualizer is True
     assert cfg.normalize_loudness is True
     assert cfg.fade_ms >= 500
@@ -100,7 +100,7 @@ def test_v26_defaults_enable_visualizer_loudness_and_audible_fades(tmp_path):
         'fade_ms': 0,
     }), encoding='utf-8')
     migrated = load_config(old_path)
-    assert migrated.config_version == 26
+    assert migrated.config_version == 27
     assert migrated.show_visualizer is True
     assert migrated.normalize_loudness is True
     assert migrated.fade_ms >= 500
