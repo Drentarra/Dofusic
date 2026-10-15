@@ -118,3 +118,25 @@ def test_zone_overlay_changes_on_confirmed_ocr_and_on_persistent_recalibration()
     # Single noisy frames never resize the outline.
     assert controller._stable_zone_overlay_rect(normal, text_present=True)[2] == 90
     assert controller._stable_zone_overlay_rect((10, 40, 90, 34), text_present=True)[2] == 90
+
+
+@pytest.mark.parametrize('bright', [False, True])
+@pytest.mark.parametrize('combat,names', [
+    (False, ('minus', 'sword', 'dots', 'info')),
+    (True, ('minus', 'combat_eye', 'diamond', 'heart', 'fighter', 'skull')),
+])
+def test_expanded_toolbar_shapes_keep_correct_state_on_any_background(bright, combat, names):
+    from dofusic.vision.combat_shapes import GLYPH_ROWS
+
+    image = _scene(bright=bright, collapsed=False)
+    # Independent rasterized silhouettes make a full exploration/combat toolbar.
+    for x, name in zip((6, 42, 76, 110, 144, 178), names):
+        rows = GLYPH_ROWS[name]
+        mask = np.asarray(
+            [[(row >> bit) & 1 for bit in range(25)] for row in rows],
+            dtype=np.uint8,
+        )
+        image[6:31, x:x + 25][mask.astype(bool)] = (225, 225, 225)
+    observed = analyze_combat_toolbar(extract_hud_inputs(image, transform=HUDTransform()).combat)
+    assert observed.in_combat is combat
+    assert observed.confidence >= 0.72
