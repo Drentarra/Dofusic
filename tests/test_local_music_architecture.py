@@ -127,7 +127,7 @@ def test_online_code_and_media_engines_are_removed_from_sources():
     assert 'yt-dlp' not in req
     spec = (root / 'Data/Dofusic.spec').read_text(encoding='utf-8')
     assert 'QUICKJS_BINARY' not in spec
-    assert 'imageio_ffmpeg' in spec
+    assert 'imageio_ffmpeg' in (root / 'Data/main.py').read_text(encoding='utf-8')
     builder = (root / 'Data/tools/build_portable.py').read_text(encoding='utf-8')
     assert 'prepare_quickjs_runtime' not in builder
     assert 'qjs.exe' in builder  # Explicit validation against obsolete binaries
