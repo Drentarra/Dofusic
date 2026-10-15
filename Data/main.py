@@ -5,7 +5,6 @@ import importlib
 import multiprocessing
 import os
 from pathlib import Path
-import subprocess
 import sys
 
 
@@ -25,7 +24,7 @@ def _run_self_test() -> int:
 
     required_modules = (
         'rapidocr', 'onnxruntime', 'numpy', 'cv2', 'rapidfuzz', 'mss',
-        'PIL', 'pygame', 'yt_dlp', 'yt_dlp_ejs', 'imageio_ffmpeg',
+        'PIL', 'pygame', 'imageio_ffmpeg',
         'win32gui', 'win32ui', 'win32con', 'win32process', 'tkinter',
     )
     try:
@@ -42,16 +41,6 @@ def _run_self_test() -> int:
         import imageio_ffmpeg
         if not Path(imageio_ffmpeg.get_ffmpeg_exe()).is_file():
             return 43
-
-        from dofusic.online.retrieval import resolve_quickjs_executable
-        qjs_bin = resolve_quickjs_executable()
-        if not qjs_bin.is_file():
-            return 45
-        kwargs = {'stdout': subprocess.DEVNULL, 'stderr': subprocess.DEVNULL, 'check': False}
-        if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
-            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-        if subprocess.run([str(qjs_bin), '--version'], **kwargs).returncode != 0:
-            return 46
 
         from dofusic.location.repository import DofusRepository
         repository = DofusRepository(database)
