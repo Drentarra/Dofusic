@@ -16,6 +16,11 @@ on:
   push:
     tags:
       - "v*"
+    # One-time request only. Ordinary pushes to main cannot publish.
+    branches:
+      - main
+    paths:
+      - ".github/release-requests/v1.0.14.txt"
 
 permissions: {}
 
@@ -61,7 +66,19 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.create_tag_from_main && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
+          ref: ${{ inputs.create_tag_from_main && github.sha || (github.event_name == 'push' && github.ref == 'refs/heads/main') && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
+
+      - name: Verify one-time release request
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        shell: python
+        run: |
+          from pathlib import Path
+          request = Path('.github/release-requests/v1.0.14.txt')
+          if request.read_text(encoding='utf-8').strip() != 'v1.0.14':
+              raise ValueError('La demande de publication v1.0.14 est invalide')
+          version = Path('Data/dofusic/version.py').read_text(encoding='utf-8')
+          if '__version__ = "1.0.14"' not in version:
+              raise ValueError('Le code ne correspond pas au tag attendu v1.0.14')
 
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -122,7 +139,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-          ref: ${{ inputs.create_tag_from_main && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
+          ref: ${{ inputs.create_tag_from_main && github.sha || (github.event_name == 'push' && github.ref == 'refs/heads/main') && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
 
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -166,7 +183,7 @@ jobs:
           python .github/scripts/verify_release.py sbom Release/Dofusic.sbom.json Data/requirements-lock.txt
 
       - name: Attest final public ZIP
-        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: Release/Dofusic.zip
@@ -175,7 +192,7 @@ jobs:
       - name: Upload verification artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Dofusic-Windows-x64-${{ inputs.release_tag || github.ref_name }}
+          name: Dofusic-Windows-x64-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'v1.0.14' || inputs.release_tag || github.ref_name }}
           path: |
             Release/Dofusic.zip
             Release/Dofusic.zip.sha256
@@ -186,12 +203,12 @@ jobs:
           retention-days: 30
 
       - name: Create verified release tag from main
-        if: github.event_name == 'workflow_dispatch' && inputs.create_tag_from_main
+        if: (github.event_name == 'workflow_dispatch' && inputs.create_tag_from_main) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_TAG: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'v1.0.14' || inputs.release_tag }}
           VERIFIED_COMMIT: ${{ github.sha }}
         run: |
           $ErrorActionPreference = "Stop"
@@ -202,12 +219,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Le tag existe déjà ou sa création a échoué." }
 
       - name: Publish GitHub release
-        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+        if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '') || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         shell: python
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+          RELEASE_TAG: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'v1.0.14' || inputs.release_tag || github.ref_name }}
         run: |
           import os
           import subprocess
