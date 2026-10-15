@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
-from dofusic.vision.layout import HUDGeometry
+from dofusic.vision.layout import HUDGeometry, toolbar_material_columns
 from dofusic.vision.combat_shapes import GLYPH_ROWS
 
 
@@ -115,10 +115,11 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
     canonical = cv2.resize(image, (320, 40), interpolation=cv2.INTER_AREA if height >= 40 else cv2.INTER_LINEAR)
     if canonical.ndim == 3:
         canonical = canonical[:, :, :3]
-    # The unobstructed HUD has a quiet dark gap beneath the toolbar. A panel,
-    # tooltip or arbitrary scene covering this gap cannot authorize a decision.
-    separator = canonical[38:40]
-    if float(np.percentile(separator, 95)) > 18:
+    # Do not require a black separator: the world may be visible directly
+    # behind the translucent toolbar. Recognize the buttons and their material,
+    # not the absolute brightness of the scenery around them.
+    material = toolbar_material_columns(canonical)
+    if material.size == 0 or float(np.mean(material[5:32])) < 0.45:
         return unknown
     observation = _classify_toolbar(canonical)
     if observation.in_combat is not None:
@@ -148,11 +149,19 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
 
 
 def _empty_hud_surround(canonical: np.ndarray) -> bool:
-    # Skip the collapsed button's rounded/antialiased outer edge. Count pixels,
-    # not colour channels, allowing only isolated rendering specks.
-    surround = canonical[1:37, 43:]
-    pixels = surround.max(axis=2) if surround.ndim == 3 else surround
-    return float(np.percentile(pixels, 99.8)) <= 8 and int(np.count_nonzero(pixels > 12)) <= 3
+    """Verify that no additional *toolbar material* appears after the '+'.
+
+    The old test required every pixel to be black. That incorrectly rejected
+    combat in Astrub and every other location with visible scenery. An unrelated
+    window with an extra HUD-like block must still fail closed.
+    """
+    coverage = toolbar_material_columns(canonical)
+    if coverage.size <= 44:
+        return False
+    active = coverage[43:] >= 0.65
+    # A tiny isolated patch can resemble the colour of a button; a contiguous
+    # six-pixel run resembles an actual additional icon or occluding panel.
+    return not np.any(np.convolve(active.astype(np.uint8), np.ones(6, dtype=np.uint8), mode='valid') >= 6)
 
 
 def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = True) -> CombatObservation:
