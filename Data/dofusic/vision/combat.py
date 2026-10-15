@@ -101,9 +101,10 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
     """Recognize expanded/collapsed combat and exploration toolbar shapes.
 
     Ambiguous or occluded regions never become a negative combat observation.
-    In particular, a '+' only means combat when the *whole* inspected region
-    beyond it is the empty HUD surround, not when a neighbouring icon failed
-    to match. Havre-Sac and exploration have their own positive shape evidence.
+    The toggle and the neighbouring icon slots are the reliable signal: the
+    surrounding world may be a forest, dark dungeon, volcano or sky. An absent
+    second button can confirm collapsed combat, whereas an identifiable second
+    exploration icon confirms collapsed exploration.
     """
     geometry = geometry or HUDGeometry()
     unknown = CombatObservation(None, 0.0, 0.0, 0.0, 0.0)
@@ -149,19 +150,23 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
 
 
 def _empty_hud_surround(canonical: np.ndarray) -> bool:
-    """Verify that no additional *toolbar material* appears after the '+'.
+    """Check *only the adjacent icon slot* for a second toolbar button.
 
-    The old test required every pixel to be black. That incorrectly rejected
-    combat in Astrub and every other location with visible scenery. An unrelated
-    window with an extra HUD-like block must still fail closed.
+    On a collapsed combat HUD, '+' is the only control. Exploration adds an
+    eye/gear next to it. Testing all the pixels to the right, as previous
+    versions did, rejects genuine combats when scenery happens to resemble the
+    button's colour (buildings, mountains, etc.). This function deliberately
+    does not classify any pixels beyond the second button.
     """
     coverage = toolbar_material_columns(canonical)
-    if coverage.size <= 44:
+    if coverage.size < 72:
         return False
-    active = coverage[43:] >= 0.65
-    # A tiny isolated patch can resemble the colour of a button; a contiguous
-    # six-pixel run resembles an actual additional icon or occluding panel.
-    return not np.any(np.convolve(active.astype(np.uint8), np.ones(6, dtype=np.uint8), mode='valid') >= 6)
+    # Rounded corners and anti-aliased glyphs leave some unmatched pixels.
+    # A true second Dofus button still has a continuous patch of its common
+    # material under its icon. Any such patch is treated conservatively as a
+    # button/panel, not as an empty slot.
+    second_slot = coverage[43:69]
+    return float(np.mean(second_slot)) < 0.30
 
 
 def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = True) -> CombatObservation:
@@ -182,17 +187,25 @@ def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = T
         gear = _shape_score(masks[1], 'havresac_gear')
         if max(eye, gear) >= 0.78:
             return result(False, min(plus, max(eye, gear)))
-        # Full right-hand area must match the empty surround. Do not infer
-        # combat merely from absent/unrecognizable neighbouring icons.
-        # Scale refinement cannot crop away an obstruction in the original ROI.
+        # The immediately adjacent button must be absent. Scenery farther
+        # right must never be used as evidence for or against combat.
+        # Scale refinement cannot crop away the original second-button slot.
         if allow_collapsed_combat and _empty_hud_surround(canonical):
             return result(True, plus)
         return unknown
 
     combat_names = ('combat_eye', 'diamond', 'heart', 'fighter', 'skull')
     scores = [_shape_score(mask, name) for mask, name in zip(masks[1:], combat_names)]
-    # Require every icon plus the +/- control; hiding a subset is unknown.
-    if min(scores) >= 0.72 and float(np.mean(scores)) >= 0.80:
+    # Dofus' coloured diamond can lose edge pixels during rescaling, while
+    # the other four combat silhouettes remain unambiguous. Do not require
+    # all five icons to individually pass the same score: tolerate *one*
+    # slightly imperfect icon, but not a missing/occluded icon or a mixture
+    # of exploration and combat symbols.
+    if (
+        sum(score >= 0.72 for score in scores) >= 4
+        and min(scores) >= 0.60
+        and float(np.mean(scores)) >= 0.80
+    ):
         return result(True, min(minus, float(np.mean(scores))))
     sword = _shape_score(masks[1], 'sword')
     dots = _shape_score(masks[2], 'dots')
