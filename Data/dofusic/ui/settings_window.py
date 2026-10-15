@@ -26,7 +26,7 @@ def _open_path(path: Path) -> None:
 
 
 class SettingsWindow:
-    DEFAULT_SIZE = (520, 520)
+    DEFAULT_SIZE = (520, 440)
 
     def __init__(self, parent, config: AppConfig, *, config_file=None, on_apply=None) -> None:
         self.parent = parent
@@ -63,10 +63,8 @@ class SettingsWindow:
         self.notebook = ttk.Notebook(self.window, style='Dofusic.TNotebook')
         self.notebook.pack(fill='both', expand=True, padx=18, pady=(0, 12))
         appearance = tk.Frame(self.notebook, bg=p.card)
-        online = tk.Frame(self.notebook, bg=p.card)
         advanced = tk.Frame(self.notebook, bg=p.card)
         self.notebook.add(appearance, text='Apparence')
-        self.notebook.add(online, text='Musique online')
         self.notebook.add(advanced, text='Avancé')
 
         self.theme_var = tk.StringVar(value=self.config.theme)
@@ -74,11 +72,6 @@ class SettingsWindow:
         self.normalize_var = tk.BooleanVar(value=self.config.normalize_loudness)
         self.fade_var = tk.IntVar(value=self.config.fade_ms)
         self.topmost_var = tk.BooleanVar(value=self.config.always_on_top)
-        self.online_var = tk.BooleanVar(value=self.config.online_music_enabled)
-        self.suggestions_var = tk.BooleanVar(value=self.config.online_suggestions)
-        self.results_var = tk.IntVar(value=self.config.online_search_results)
-        self.delay_var = tk.IntVar(value=self.config.online_suggest_delay_ms)
-        self.cache_var = tk.IntVar(value=self.config.online_cache_mb)
         self.debug_var = tk.BooleanVar(value=self.config.debug)
 
         self._section_label(appearance, 'THÈME', p).pack(anchor='w', padx=18, pady=(18, 8))
@@ -101,20 +94,7 @@ class SettingsWindow:
         topmost_check.configure(command=lambda: self._apply(live_theme=True))
         topmost_check.pack(anchor='w', padx=18, pady=2)
 
-        self._section_label(online, 'ONLINE', p).pack(anchor='w', padx=18, pady=(18, 8))
-        online_check = self._check(online, 'Activer la musique online', self.online_var, p)
-        online_check.configure(command=lambda: self._apply(live_theme=True))
-        online_check.pack(anchor='w', padx=18, pady=2)
-        self._check(online, 'Suggestions pendant la frappe', self.suggestions_var, p).pack(anchor='w', padx=18, pady=2)
-        self._field(online, 'Résultats affichés (3–20)', self.results_var, p, minimum=3, maximum=20, increment=1).pack(fill='x', padx=18, pady=(12, 4))
-        self._field(online, 'Délai suggestions en ms (150–1200)', self.delay_var, p, minimum=150, maximum=1200, increment=50).pack(fill='x', padx=18, pady=4)
-        self._field(online, 'Cache online en Mo (64–4096)', self.cache_var, p, minimum=64, maximum=4096, increment=64).pack(fill='x', padx=18, pady=4)
-
         self._section_label(advanced, 'DIAGNOSTIC', p).pack(anchor='w', padx=18, pady=(8, 8))
-        tk.Label(
-            advanced, text='Le moteur online utilise yt-dlp sans navigateur intégré ni compte YouTube.',
-            bg=p.card, fg=p.muted, font=('Segoe UI', 9), wraplength=450, justify='left',
-        ).pack(anchor='w', padx=18, pady=(0, 10))
         self._check(advanced, 'Mode debug au prochain démarrage', self.debug_var, p).pack(anchor='w', padx=18, pady=(2, 14))
         buttons = tk.Frame(advanced, bg=p.card)
         buttons.pack(fill='x', padx=18, pady=4)
@@ -192,11 +172,6 @@ class SettingsWindow:
         self.config.normalize_loudness = bool(self.normalize_var.get())
         self.config.fade_ms = int(self.fade_var.get())
         self.config.always_on_top = bool(self.topmost_var.get())
-        self.config.online_music_enabled = bool(self.online_var.get())
-        self.config.online_suggestions = bool(self.suggestions_var.get())
-        self.config.online_search_results = int(self.results_var.get())
-        self.config.online_suggest_delay_ms = int(self.delay_var.get())
-        self.config.online_cache_mb = int(self.cache_var.get())
         self.config.debug = bool(self.debug_var.get())
         clean = self.config.sanitized()
         for field in clean.__dataclass_fields__:
