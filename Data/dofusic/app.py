@@ -166,6 +166,8 @@ class DofusicController:
         self._zone_overlay_width_px: int | None = None
         self._zone_overlay_refresh_requested = False
         self._zone_overlay_text_key = ''
+        self._zone_overlay_candidate_width: int | None = None
+        self._zone_overlay_candidate_count = 0
         # Per-Dofus-process startup latch: only position OCR is allowed until valid
         # map coordinates have been read once. Closing Dofus re-arms this guard so a
         # later relaunch cannot interpret the login/character menus as a game map.
@@ -256,6 +258,8 @@ class DofusicController:
         self._zone_overlay_width_px = None
         self._zone_overlay_refresh_requested = False
         self._zone_overlay_text_key = ''
+        self._zone_overlay_candidate_width: int | None = None
+        self._zone_overlay_candidate_count = 0
         self.state.location = 'En attente'
         self.state.location_key = ''
         self.state.place = '—'
@@ -434,6 +438,30 @@ class DofusicController:
             stable_width = max(1, candidate_width)
             self._zone_overlay_width_px = stable_width
             self._zone_overlay_refresh_requested = False
+            self._zone_overlay_candidate_width = None
+            self._zone_overlay_candidate_count = 0
+        elif text_present and bool(getattr(self, '_zone_overlay_text_key', '')):
+            # Recalibration / font scaling may change visible pixel width while
+            # OCR still recognizes the same zone. Accept only persistent, nearly
+            # identical measurements; do not follow one-frame scenery noise.
+            if abs(candidate_width - stable_width) <= 2:
+                self._zone_overlay_candidate_width = None
+                self._zone_overlay_candidate_count = 0
+            else:
+                previous = getattr(self, '_zone_overlay_candidate_width', None)
+                if previous is not None and abs(previous - candidate_width) <= 2:
+                    self._zone_overlay_candidate_count = getattr(self, '_zone_overlay_candidate_count', 0) + 1
+                else:
+                    self._zone_overlay_candidate_width = candidate_width
+                    self._zone_overlay_candidate_count = 1
+                if self._zone_overlay_candidate_count >= 3:
+                    stable_width = max(1, candidate_width)
+                    self._zone_overlay_width_px = stable_width
+                    self._zone_overlay_candidate_width = None
+                    self._zone_overlay_candidate_count = 0
+        else:
+            self._zone_overlay_candidate_width = None
+            self._zone_overlay_candidate_count = 0
 
         return x, y, max(1, int(stable_width)), max(1, height)
 
@@ -1056,7 +1084,7 @@ class DofusicController:
             self.state.combat_overlay_rect = rects.combat
             self.state.zone_overlay_rect = self._stable_zone_overlay_rect(
                 rects.zone,
-                text_present=zone_crop_has_text(hud.zone),
+                text_present=bool(hud.zone_display_width) or zone_crop_has_text(hud.zone),
             )
             self.state.position_overlay_rect = self._position_overlay_screen_rect(
                 full_rect=rects.position,

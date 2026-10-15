@@ -1,4 +1,4 @@
-# Dofusic 1.0.12 — portable Windows x64
+# Dofusic — portable Windows x64
 
 Dofusic détecte automatiquement la zone et la position de **Dofus.exe** par OCR, puis joue les musiques locales associées. La musique online est optionnelle et utilise un moteur léger basé sur **yt-dlp** : aucun navigateur intégré, aucune session YouTube, aucun compte et aucun cookie ne sont nécessaires.
 

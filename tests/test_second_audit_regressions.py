@@ -151,7 +151,7 @@ def test_worker_start_failure_releases_allocated_ipc_queues():
 
 def test_built_program_reports_the_next_version():
     from dofusic.version import __version__
-    assert __version__ == '1.0.12'
+    assert __version__ == '1.0.13'
 
 
 def test_thumbnail_pending_jobs_and_ready_cache_remain_bounded():
