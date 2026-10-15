@@ -263,37 +263,16 @@ def toolbar_material_columns(image: np.ndarray, *, scale: float = 1.0) -> np.nda
     return (difference <= tolerance).mean(axis=0).astype(np.float32)
 
 
-def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
-    """Follow contiguous HUD button material, not pixels of the game scene."""
-    scale = max(0.35, min(3.0, float(scale)))
-    minimum = max(1, round(38 * scale))
-    if combat is None or getattr(combat, 'size', 0) == 0:
-        return minimum
-    height, width = combat.shape[:2]
-    if height < 10 or width <= minimum:
-        return min(width, minimum)
+def combat_toolbar_frame_width(button_count: int | None, scale: float) -> int:
+    """Stable rectangle from recognized UI state, never from scene brightness.
 
-    coverage = toolbar_material_columns(combat, scale=scale)
-    active = coverage >= 0.32
-    # A uniformly coloured/empty crop has no detectable final button edge.
-    # Do not draw a full-width outline merely because all pixels match.
-    if not np.any(active[minimum:]) or not np.any(coverage[minimum:] < 0.16):
-        return minimum
+    Dofus has a collapsed bar of one/two buttons and a six-button expanded bar.
+    The score used to recognize these states belongs to the combat detector;
+    geometry never guesses from pixels of the map.
+    """
+    sizes = {1: 38, 2: 76, 6: 214}
+    return max(1, round(sizes.get(button_count, 38) * max(.35, min(3., scale))))
 
-    # Gaps between actual buttons are short. Stop on the first longer gap:
-    # on Astrub, scenery to the right is bright but is not toolbar material.
-    max_gap = max(6, round(10 * scale))
-    gap = 0
-    last = minimum
-    for x in range(minimum, width):
-        if active[x]:
-            gap = 0
-            last = x
-        else:
-            gap += 1
-            if gap >= max_gap:
-                break
-    return min(width, max(minimum, last + 1 + max(1, round(3 * scale))))
 
 def tracking_screen_rects(
     *,
@@ -301,6 +280,7 @@ def tracking_screen_rects(
     capture_image_shape: tuple[int, ...],
     hud: HUDInputs,
     geometry: HUDGeometry | None = None,
+    toolbar_buttons: int | None = None,
 ) -> HUDTrackingRects:
     """Map the exact OCR inputs back using the same runtime HUD transform."""
     geometry = geometry or HUDGeometry()
@@ -335,13 +315,13 @@ def tracking_screen_rects(
             max(1, int(round(crop_h * sy_screen))),
         )
 
-    # Le détecteur continue d'analyser les 320 px du HUD. Seul le contour
-    # affiché utilise la longueur du bandeau réellement présent à l'écran.
+    # The detection input remains the whole HUD; the contour follows the
+    # already-recognized number of buttons, never the scenery.
     toolbar = map_reference_rect(
         geometry.combat_x, geometry.combat_y,
         geometry.combat_width, geometry.toolbar_reference_height,
     )
-    visible_width = _visible_combat_toolbar_width(hud.combat, transform.scale)
+    visible_width = combat_toolbar_frame_width(toolbar_buttons, transform.scale)
     zone_rect = map_crop(geometry.zone_x, geometry.zone_y, hud.zone)
     if hud.zone_display_width is not None:
         screen_zone_width = max(1, int(round(hud.zone_display_width * sx_screen)))
