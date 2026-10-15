@@ -53,6 +53,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
+          python -c "import sys; sys.path.insert(0, 'Data'); from pathlib import Path; from tools.build_portable import prepare_ocr_models; prepare_ocr_models(Path('Data'))"
           python Data/tools/prepare_models.py
       - name: Probe required runtimes
         run: |
