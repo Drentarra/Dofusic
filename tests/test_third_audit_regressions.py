@@ -72,7 +72,7 @@ def test_title_and_version_argument_share_single_release_version(capsys):
     import inspect
     from Data.main import _parse_args
 
-    assert __version__ == '1.0.13'
+    assert __version__ == '1.0.14'
     init_ast = ast.parse(inspect.getsource(MainWindow.__init__).replace('    def ', 'def ', 1))
     calls = (
         node for node in ast.walk(init_ast)
@@ -87,4 +87,4 @@ def test_title_and_version_argument_share_single_release_version(capsys):
     with pytest.raises(SystemExit) as exc:
         _parse_args(['--version'])
     assert exc.value.code == 0
-    assert 'Dofusic 1.0.13' in capsys.readouterr().out
+    assert 'Dofusic 1.0.14' in capsys.readouterr().out
