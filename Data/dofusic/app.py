@@ -22,7 +22,7 @@ from dofusic.location.resolver import LocationResolver
 from dofusic.models import Coordinates, DecisionState, LocationEvidence, LocationRecord, PositionOCRResult, ZoneOCRResult
 from dofusic.text import clean_text
 from dofusic.vision.combat import CombatStateTracker, analyze_combat_toolbar
-from dofusic.vision.layout import HUDGeometry, extract_hud_inputs, tracking_screen_rects, zone_crop_has_text
+from dofusic.vision.layout import HUDGeometry, extract_hud_inputs, tracking_screen_rects, zone_label_frame_width
 from dofusic.vision.position_overlay import coordinate_overlay_width
 from dofusic.vision.workers import OCREventKind, OCRWorkerClient
 from dofusic.vision.scheduler import OCRChannelScheduler
@@ -163,11 +163,9 @@ class DofusicController:
         self.last_reliable_position: Coordinates | None = None
         self.context_position: Coordinates | None = None
         self._accepted_position_result: PositionOCRResult | None = None
-        self._zone_overlay_width_px: int | None = None
-        self._zone_overlay_refresh_requested = False
-        self._zone_overlay_text_key = ''
-        self._zone_overlay_candidate_width: int | None = None
-        self._zone_overlay_candidate_count = 0
+        self._zone_overlay_location_key = ''
+        self._zone_overlay_label = ''
+        self._toolbar_buttons: int | None = None
         # Per-Dofus-process startup latch: only position OCR is allowed until valid
         # map coordinates have been read once. Closing Dofus re-arms this guard so a
         # later relaunch cannot interpret the login/character menus as a game map.
@@ -254,11 +252,9 @@ class DofusicController:
         self.last_reliable_position = None
         self.context_position = None
         self._accepted_position_result = None
-        self._zone_overlay_width_px = None
-        self._zone_overlay_refresh_requested = False
-        self._zone_overlay_text_key = ''
-        self._zone_overlay_candidate_width: int | None = None
-        self._zone_overlay_candidate_count = 0
+        self._zone_overlay_location_key = ''
+        self._zone_overlay_label = ''
+        self._toolbar_buttons = None
         self.state.location = 'En attente'
         self.state.location_key = ''
         self.state.place = '—'
@@ -411,58 +407,19 @@ class DofusicController:
         self.state.position_display = self._position_display(coordinates)
 
     def _stable_zone_overlay_rect(
-        self,
-        candidate: tuple[int, int, int, int],
-        *,
-        text_present: bool,
+        self, candidate: tuple[int, int, int, int],
     ) -> tuple[int, int, int, int]:
-        """Keep zone-outline width stable until OCR confirms a new text label.
+        """Use the complete confirmed zone name for a stable display width.
 
-        Dynamic pixel trimming may temporarily see transition scenery as glyphs and
-        produce a very wide crop.  The displayed outline therefore accepts a new
-        width only after zone OCR has produced a non-empty *changed* label. X/Y and
-        height still follow the live Dofus window every frame.
+        No per-frame pixel scans or temporal threshold state are necessary.
+        The OCR image remains unaffected; only the overlay is formatted.
         """
         x, y, candidate_width, height = (int(v) for v in candidate)
-        stable_width = getattr(self, '_zone_overlay_width_px', None)
-        if stable_width is None:
-            # Before the first OCR-confirmed zone, use the calibrated empty-preview
-            # width rather than trusting transition pixels across the whole client.
-            preview_width = max(32, int(round(max(1, height) * (96.0 / 34.0))))
-            stable_width = max(1, min(candidate_width, preview_width))
-            self._zone_overlay_width_px = stable_width
-
-        refresh = bool(getattr(self, '_zone_overlay_refresh_requested', False))
-        if refresh and text_present:
-            stable_width = max(1, candidate_width)
-            self._zone_overlay_width_px = stable_width
-            self._zone_overlay_refresh_requested = False
-            self._zone_overlay_candidate_width = None
-            self._zone_overlay_candidate_count = 0
-        elif text_present and bool(getattr(self, '_zone_overlay_text_key', '')):
-            # Recalibration / font scaling may change visible pixel width while
-            # OCR still recognizes the same zone. Accept only persistent, nearly
-            # identical measurements; do not follow one-frame scenery noise.
-            if abs(candidate_width - stable_width) <= 2:
-                self._zone_overlay_candidate_width = None
-                self._zone_overlay_candidate_count = 0
-            else:
-                previous = getattr(self, '_zone_overlay_candidate_width', None)
-                if previous is not None and abs(previous - candidate_width) <= 2:
-                    self._zone_overlay_candidate_count = getattr(self, '_zone_overlay_candidate_count', 0) + 1
-                else:
-                    self._zone_overlay_candidate_width = candidate_width
-                    self._zone_overlay_candidate_count = 1
-                if self._zone_overlay_candidate_count >= 3:
-                    stable_width = max(1, candidate_width)
-                    self._zone_overlay_width_px = stable_width
-                    self._zone_overlay_candidate_width = None
-                    self._zone_overlay_candidate_count = 0
-        else:
-            self._zone_overlay_candidate_width = None
-            self._zone_overlay_candidate_count = 0
-
-        return x, y, max(1, int(stable_width)), max(1, height)
+        label = getattr(self, '_zone_overlay_label', '')
+        if not label:
+            return x, y, max(1, min(candidate_width, round(height * 96 / 34))), max(1, height)
+        width = zone_label_frame_width(label, height)
+        return x, y, max(1, width), max(1, height)
 
     def _play_startup_generic(self, *, restart: bool) -> bool:
         if not self.game_process_running:
@@ -620,8 +577,11 @@ class DofusicController:
             self.state.display_theme = location.parent_area_name or location.name
 
     def _update_combat_from_toolbar(self, toolbar: np.ndarray | None) -> None:
-        # En donjon, le contexte positif fait foi : aucun besoin d'analyser
-        # une barre temporairement cachée ni de toucher au pipeline audio.
+        # One recognition result serves the overlay and audio decisions.
+        # Dungeon music always retains priority over generic combat music.
+        observation = analyze_combat_toolbar(toolbar, self.hud_geometry)
+        if observation.toolbar_buttons in (1, 2, 6):
+            self._toolbar_buttons = observation.toolbar_buttons
         if self._is_dungeon_context():
             if not getattr(self, '_combat_suspended_for_dungeon', False):
                 self.combat_tracker.reset()
@@ -633,7 +593,6 @@ class DofusicController:
         if getattr(self, '_combat_suspended_for_dungeon', False):
             self.combat_tracker.reset()
             self._combat_suspended_for_dungeon = False
-        observation = analyze_combat_toolbar(toolbar, self.hud_geometry)
         self.state.combat_confidence = float(observation.confidence)
         transition = self.combat_tracker.update(observation)
         if transition is None:
@@ -758,8 +717,6 @@ class DofusicController:
             self._mark_unknown(now, 'Aucun nom de zone lisible')
             return
 
-        zone_text_key = clean_text(result.text).casefold()
-
         coordinates = None
         if (
             self.state.position_x is not None
@@ -773,13 +730,21 @@ class DofusicController:
         evidence = self.resolver.resolve(result.text, result.confidence, coordinates, timestamp=observation_time)
         self.last_evidence = evidence
         decision = self.decision.evaluate(evidence)
-        if (
-            decision.state is not DecisionState.UNKNOWN
-            and zone_text_key
-            and zone_text_key != getattr(self, '_zone_overlay_text_key', '')
-        ):
-            self._zone_overlay_text_key = zone_text_key
-            self._zone_overlay_refresh_requested = True
+        # Keep the longest confirmed form of a label for this same place.
+        # A partial OCR frame must never resize 'Astrub (Cité d'Astrub)'
+        # back to 'Astrub'. A genuinely different place resets the label.
+        if decision.state is DecisionState.CONFIRMED and decision.location is not None:
+            place_key = decision.location.canonical_key
+            new_label = clean_text(result.text) or decision.location.name
+            old_label = getattr(self, '_zone_overlay_label', '')
+            if place_key != getattr(self, '_zone_overlay_location_key', ''):
+                self._zone_overlay_location_key = place_key
+                self._zone_overlay_label = new_label
+            elif (
+                len(new_label) > len(old_label)
+                and (not old_label or old_label.casefold() in new_label.casefold())
+            ):
+                self._zone_overlay_label = new_label
         self.state.ocr_text = result.text
         self.state.confidence = result.confidence
         self.state.decision_state = decision.state.value
@@ -1041,13 +1006,11 @@ class DofusicController:
                 capture_image_shape=frame.image.shape,
                 hud=hud,
                 geometry=self.hud_geometry,
+                toolbar_buttons=getattr(self, '_toolbar_buttons', None),
             )
             self.state.overlay_hwnd = int(frame.hwnd)
             self.state.combat_overlay_rect = rects.combat
-            self.state.zone_overlay_rect = self._stable_zone_overlay_rect(
-                rects.zone,
-                text_present=bool(hud.zone_display_width) or zone_crop_has_text(hud.zone),
-            )
+            self.state.zone_overlay_rect = self._stable_zone_overlay_rect(rects.zone)
             self.state.position_overlay_rect = self._position_overlay_screen_rect(
                 full_rect=rects.position,
                 result=self._accepted_position_result,
