@@ -128,7 +128,8 @@ def test_zone_overlay_changes_on_confirmed_ocr_and_on_persistent_recalibration()
 def test_expanded_toolbar_shapes_keep_correct_state_on_any_background(bright, combat, names):
     from dofusic.vision.combat_shapes import GLYPH_ROWS
 
-    image = _scene(bright=bright, collapsed=False)
+    image = _scene(bright=bright, collapsed=True)
+    image[:37, :214] = (65, 60, 55)
     # Independent rasterized silhouettes make a full exploration/combat toolbar.
     for x, name in zip((6, 42, 76, 110, 144, 178), names):
         rows = GLYPH_ROWS[name]
