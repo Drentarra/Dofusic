@@ -54,6 +54,7 @@ def test_queue_remove_button_stays_inside_narrow_row_with_long_title():
     class Session:
         current = None
         repeat_current = False
+        status = ''
         pending = (
             LocalTrack(Path('Titre extrêmement long qui ne doit jamais pousser le bouton de suppression hors de la file.mp3')),
         )
