@@ -257,7 +257,10 @@ def toolbar_material_columns(image: np.ndarray, *, scale: float = 1.0) -> np.nda
         patch = patch[:, :, None]
     background = np.median(patch[:, x0:x1], axis=(0, 1))
     difference = np.abs(patch.astype(np.float32) - background).max(axis=2)
-    return (difference <= 34).mean(axis=0).astype(np.float32)
+    # On a very dark HUD, black scenery would otherwise count as the same
+    # material. Relative tolerance preserves both dark themes and bright maps.
+    tolerance = min(34.0, max(9.0, float(background.max()) * 0.48))
+    return (difference <= tolerance).mean(axis=0).astype(np.float32)
 
 
 def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
