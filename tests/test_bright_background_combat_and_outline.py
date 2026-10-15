@@ -36,7 +36,8 @@ def _scene(*, bright: bool, collapsed: bool = True):
         cv2.line(frame, (18, 12), (18, 25), (230, 220, 220), 1)
     else:
         for x in (49, 85, 121, 157, 193):
-            cv2.rectangle(frame, (x, 7), (x + 22, 30), (115, 108, 100), -1)
+            cv2.rectangle(frame, (x, 7), (x + 22, 30), (80, 75, 70), -1)
+            cv2.circle(frame, (x + 11, 18), 5, (210, 205, 200), 1)
     return frame
 
 
