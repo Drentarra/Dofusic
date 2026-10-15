@@ -39,7 +39,7 @@ def test_builder_model_manifest_has_expected_sha256_values():
 
 def test_readme_describes_zero_install_end_user_flow():
     readme = (DATA / 'README.md').read_text(encoding='utf-8').lower()
-    assert 'aucun python' in readme
+    assert 'sans installer python' in readme
     assert 'premier lancement' not in readme or 'aucun téléchargement au premier lancement' in readme
 
 
