@@ -42,12 +42,13 @@ def test_music_panel_close_is_idempotent():
     window = MusicWindow.__new__(MusicWindow)
     window._closed = False
     window._after_id = None
-    window._remember_current_search = lambda: closed.append('remember')
+    window.session = SimpleNamespace(remember_search=lambda value: closed.append(('remember', value)))
+    window.search_var = SimpleNamespace(get=lambda: 'Astrub')
     window.window = SimpleNamespace(destroy=lambda: closed.append('destroy'))
     window.close()
     window.close()
     window._poll()
-    assert closed == ['remember', 'destroy']
+    assert closed == [('remember', 'Astrub'), 'destroy']
 
 
 def test_title_and_version_argument_share_single_release_version(capsys):
