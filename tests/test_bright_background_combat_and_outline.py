@@ -140,3 +140,14 @@ def test_expanded_toolbar_shapes_keep_correct_state_on_any_background(bright, co
     observed = analyze_combat_toolbar(extract_hud_inputs(image, transform=HUDTransform()).combat)
     assert observed.in_combat is combat
     assert observed.confidence >= 0.72
+
+
+def test_very_long_zone_name_extends_outline_without_1920px_fixed_scan():
+    image = np.zeros((34, 1300, 3), dtype=np.uint8)
+    label = 'La tres longue zone de la citadelle et ses remparts'
+    cv2.putText(image, label, (8, 25), cv2.FONT_HERSHEY_SIMPLEX, .7, (15, 15, 15), 4)
+    cv2.putText(image, label, (8, 25), cv2.FONT_HERSHEY_SIMPLEX, .7, (244, 244, 244), 2)
+    width = visible_zone_text_width(image, scale=1.0)
+    assert width is not None
+    assert width > 512
+    assert width < image.shape[1]
