@@ -272,7 +272,9 @@ def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> in
 
     coverage = toolbar_material_columns(combat, scale=scale)
     active = coverage >= 0.32
-    if not np.any(active[minimum:]):
+    # A uniformly coloured/empty crop has no detectable final button edge.
+    # Do not draw a full-width outline merely because all pixels match.
+    if not np.any(active[minimum:]) or not np.any(coverage[minimum:] < 0.16):
         return minimum
 
     # Gaps between actual buttons are short. Stop on the first longer gap:
