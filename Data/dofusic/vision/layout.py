@@ -162,7 +162,43 @@ def estimate_hud_transform(
         else:
             low_run = 0
     if toolbar_end is None:
-        return None
+        # When outdoor scenery fills the rows immediately under the HUD,
+        # brightness cannot delimit its lower edge. Compare the material
+        # inside the first button with the rows beneath that same button.
+        # This keeps scale calibration independent of map brightness.
+        first_band = active[origin_y:min(probe_h, origin_y + 18)]
+        first_columns = np.flatnonzero(first_band.mean(axis=0) > 0.20) if first_band.size else np.empty(0)
+        first_x = int(first_columns[0]) if first_columns.size else 0
+        y0 = origin_y + 7
+        y1 = min(probe_h, origin_y + 13)
+        x0 = first_x + 5
+        x1 = min(probe_w, first_x + 9)
+        if y1 <= y0 or x1 <= x0:
+            return None
+        sample = probe[y0:y1, x0:x1]
+        if sample.size == 0:
+            return None
+        if sample.ndim == 2:
+            sample = sample[:, :, None]
+            source = probe[:, :, None] if probe.ndim == 2 else probe
+        else:
+            source = probe
+        material_color = np.median(sample, axis=(0, 1))
+        diff = np.abs(source[:, x0:x1].astype(np.float32) - material_color).max(axis=2)
+        agreement = (diff <= 34).mean(axis=1)
+        if float(np.mean(agreement[y0:y1])) < 0.65:
+            return None
+        low_run = 0
+        for y in range(origin_y + 20, len(agreement)):
+            if agreement[y] < 0.20:
+                low_run += 1
+                if low_run >= 3:
+                    toolbar_end = y - low_run + 1
+                    break
+            else:
+                low_run = 0
+        if toolbar_end is None:
+            return None
 
     toolbar_height = toolbar_end - origin_y
     if toolbar_height < 18 or toolbar_height > 120:
