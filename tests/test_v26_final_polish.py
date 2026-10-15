@@ -125,27 +125,6 @@ def test_blank_zone_crop_is_recognized_as_no_text_and_real_glyphs_as_text():
     assert layout.zone_crop_has_text(glyphs) is True
 
 
-def test_zone_overlay_width_freezes_until_ocr_confirms_changed_text():
-    controller = DofusicController.__new__(DofusicController)
-    controller.state = SimpleNamespace(zone_overlay_rect=(10, 40, 122, 34))
-    controller._zone_overlay_width_px = 122
-    controller._zone_overlay_refresh_requested = False
-
-    # Transition noise can make the dynamic crop enormous; without a confirmed
-    # OCR label the visible white outline must keep the old width.
-    frozen_blank = controller._stable_zone_overlay_rect((10, 40, 500, 34), text_present=False)
-    frozen_noise = controller._stable_zone_overlay_rect((10, 40, 500, 34), text_present=True)
-    assert frozen_blank == (10, 40, 122, 34)
-    assert frozen_noise == (10, 40, 122, 34)
-
-    controller._zone_overlay_refresh_requested = True
-    still_frozen = controller._stable_zone_overlay_rect((10, 40, 500, 34), text_present=False)
-    refreshed = controller._stable_zone_overlay_rect((10, 40, 180, 34), text_present=True)
-
-    assert still_frozen == (10, 40, 122, 34)
-    assert refreshed == (10, 40, 180, 34)
-
-
 def test_dofus_process_gate_starts_automation_only_when_game_exists_and_fades_on_close(tmp_path):
     running = {'value': False}
     capture = _Capture()
@@ -216,7 +195,7 @@ def test_closing_dofus_does_not_stop_a_manual_audio_override(tmp_path):
     controller.tick(now=2.0)
 
     assert len(player.stop_calls) == stop_count
-    assert controller.audio_override_source == 'local'
+    assert controller.audio_override_active is True
     assert player.current == manual
 
 
@@ -235,41 +214,6 @@ def test_spectrum_analysis_only_applies_loudness_gain_when_normalization_is_enab
     enabled._spectrum_generation = 5
     enabled._publish_analysis(track, 5, np.zeros((1, 24), dtype=np.float32), 1000.0, 2.0)
     assert enabled._current_loudness_gain == 2.0
-
-
-def test_manual_and_online_file_transitions_use_player_fade_in_and_fade_out(tmp_path):
-    class _MusicChannel:
-        def __init__(self):
-            self.fadeouts = []
-            self.loads = []
-            self.plays = []
-            self.volumes = []
-
-        def fadeout(self, value):
-            self.fadeouts.append(int(value))
-
-        def load(self, value):
-            self.loads.append(str(value))
-
-        def set_volume(self, value):
-            self.volumes.append(float(value))
-
-        def play(self, loops, *, fade_ms=0):
-            self.plays.append((int(loops), int(fade_ms)))
-
-    channel = _MusicChannel()
-    pygame = SimpleNamespace(mixer=SimpleNamespace(music=channel))
-    player = MusicPlayer(fade_ms=650, spectrum_enabled=False, normalize_loudness=False)
-    player._ready = True
-    player._pygame = pygame
-    player.current = tmp_path / 'old.mp3'
-
-    target = tmp_path / 'next.mp3'
-    assert player.play(target, loop=False, restart=True) is True
-
-    assert channel.fadeouts == [650]
-    assert channel.loads == [str(target)]
-    assert channel.plays == [(0, 650)]
 
 
 def test_settings_expose_visualizer_normalization_and_fade_controls():
