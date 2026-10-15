@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+
+from PIL import ImageFont
 
 import cv2
 import numpy as np
@@ -473,31 +476,22 @@ def trim_zone_line(
     )
 
 
+@lru_cache(maxsize=128)
 def zone_label_frame_width(text: str, line_height: int) -> int:
-    """Measure a *confirmed OCR label* once, not pixel gaps in each screenshot.
+    """Stable full-label width from accepted OCR, independent of map pixels.
 
-    The rendered frame cannot stop at 'Astrub' while the confirmed label is
-    'Astrub (Cité d\'Astrub)'. Text formatting is approximate, but its width
-    remains stable until a different confirmed place is reported.
+    This frame is intentionally not part of OCR preprocessing. A cache ensures
+    no font loading or string measurement happens repeatedly for a static map.
     """
-    from functools import lru_cache
-    from PIL import ImageFont
-
-    @lru_cache(maxsize=96)
-    def measure(label: str, height: int) -> int:
-        size = max(9, round(height * 0.46))
-        for font_name in ('arialbd.ttf', 'DejaVuSans-Bold.ttf'):
-            try:
-                font = ImageFont.truetype(font_name, size)
-                return max(1, int(round(font.getlength(label) + 12)))
-            except OSError:
-                continue
-        # The PIL built-in font is always available even on restricted systems.
-        font = ImageFont.load_default()
-        return max(1, int(round(font.getlength(label) * size / 11 + 12)))
-
-    return measure(str(text or '').strip(), max(1, int(line_height)))
-
+    label = str(text or '').strip()
+    size = max(9, round(max(1, int(line_height)) * .46))
+    for font_name in ('arialbd.ttf', 'DejaVuSans-Bold.ttf'):
+        try:
+            font = ImageFont.truetype(font_name, size)
+            return max(1, round(font.getlength(label) + 12))
+        except OSError:
+            continue
+    return max(1, round(ImageFont.load_default().getlength(label) * size / 11 + 12))
 
 
 def extract_hud_inputs(
