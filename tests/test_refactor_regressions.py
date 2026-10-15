@@ -131,6 +131,10 @@ def test_track_loudness_gain_is_bounded_and_targets_common_level():
     assert loudness_gain_from_dbfs(None) == 1.0
 
 
+def _stroke(image, x1, x2, y1, y2):
+    image[y1:y2, x1:x2] = 255
+
+
 def test_zone_crop_stops_at_first_real_gap_instead_of_following_scenery_noise():
     from dofusic.vision.layout import trim_zone_line
 
