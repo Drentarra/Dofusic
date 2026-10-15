@@ -1,4 +1,4 @@
-DOFUSIC 1.0.12 - CONSTRUCTION PORTABLE WINDOWS X64
+DOFUSIC - CONSTRUCTION PORTABLE WINDOWS X64
 ============================================================
 
 1. Sur un PC Windows x64 avec Internet, lance BUILD_PORTABLE.bat.
