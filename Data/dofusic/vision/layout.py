@@ -516,7 +516,8 @@ def visible_zone_text_width(image: np.ndarray, *, scale: float = 1.0) -> int | N
     # Most zone labels are short. Analyze only the left part of the HUD;
     # extend progressively for unusually long names, never truncate them.
     # This avoids processing the full 1920-pixel strip on every capture.
-    gap_limit = max(8, round(13 * scale))
+    # Word spacing in bold zone names may exceed 13 pixels at full scale.
+    gap_limit = max(12, round(18 * scale))
     scan_width = min(w, max(256, round(512 * scale)))
     while True:
         region = image[y0:y1, :scan_width, :3]
