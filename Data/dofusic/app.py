@@ -184,10 +184,9 @@ class DofusicController:
         )
         self.combat_tracker = CombatStateTracker(required_confirmations=3, initial_state=False)
         self._combat_suspended_for_dungeon = False
-        # Online music is a temporary audio override only. OCR/location continue
-        # normally and keep this desired local track up to date underneath it.
+        # Manual local playback temporarily overrides automatic location music.
+        # OCR and dungeon decisions continue updating the desired track.
         self._audio_override_active = False
-        self._audio_override_source: str | None = None
         # Backward-compatible mirror used by a few internal tests/consumers.
         self._desired_local_track: Path | None = None
 
@@ -510,7 +509,7 @@ class DofusicController:
             self.state.status = 'En attente de la position Dofus'
             return
         if self.audio_override_active:
-            # Do not interrupt a manual/online override, but remember what OCR wants now.
+            # Keep updating the desired soundtrack during local manual playback.
             self.state.status = status
             return
         try:
@@ -528,53 +527,10 @@ class DofusicController:
         return bool(getattr(self, '_audio_override_active', False))
 
     @property
-    def audio_override_source(self) -> str | None:
-        if not getattr(self, '_audio_override_active', False):
-            return None
-        return getattr(self, '_audio_override_source', None)
-
-    @property
-    def online_audio_active(self) -> bool:
-        return self.audio_override_source == 'online'
-
-    @property
     def automatic_detection_unlocked(self) -> bool:
         # Default True keeps lightweight __new__-based internal consumers backward
         # compatible; production instances always initialize the latch explicitly.
         return bool(getattr(self, '_automatic_detection_unlocked', True))
-
-    def _play_audio_override(
-        self,
-        track: Path | str,
-        title: str,
-        *,
-        source: str,
-        loop: bool,
-    ) -> bool:
-        target = Path(track)
-        self._audio_override_active = True
-        self._audio_override_source = str(source)
-        try:
-            changed = bool(self.player.play(target, loop=bool(loop), restart=True))
-        except Exception:
-            changed = False
-            self.logger.exception('Lecture %s impossible: %s', source, target)
-        if changed:
-            self.state.music = (title or target.stem).strip() or target.stem
-            self.state.status = 'Lecture en ligne' if source == 'online' else 'Lecture locale manuelle'
-            return True
-        self._audio_override_active = False
-        self._audio_override_source = None
-        self.state.status = (
-            'Impossible de lire la musique en ligne'
-            if source == 'online'
-            else 'Impossible de lire la musique locale'
-        )
-        return False
-
-
-    def play_online_track(self, track: Path | str, title: str) -> bool:
-        return self._play_audio_override(track, title, source='online', loop=False)
 
     def play_manual_local_track(
         self,
@@ -584,16 +540,22 @@ class DofusicController:
         loop: bool = False,
     ) -> bool:
         target = Path(track)
-        return self._play_audio_override(
-            target,
-            title or target.stem,
-            source='local',
-            loop=bool(loop),
-        )
+        self._audio_override_active = True
+        try:
+            changed = bool(self.player.play(target, loop=bool(loop), restart=True))
+        except Exception:
+            changed = False
+            self.logger.exception('Lecture locale impossible : %s', target)
+        if changed:
+            self.state.music = (title or target.stem).strip() or target.stem
+            self.state.status = 'Lecture locale manuelle'
+            return True
+        self._audio_override_active = False
+        self.state.status = 'Impossible de lire la musique locale'
+        return False
 
     def resume_local_audio(self) -> bool:
         self._audio_override_active = False
-        self._audio_override_source = None
         if not self.game_process_running:
             try:
                 self.player.stop(fade_ms=self.config.fade_ms)
@@ -684,8 +646,8 @@ class DofusicController:
             label, observation.confidence, observation.luminance_ratio,
         )
 
-        # Recompute only the desired local audio. _play_track already guarantees
-        # that an active online/API track is never interrupted.
+        # Continue tracking the desired soundtrack while manual local playback
+        # temporarily owns the audio channel.
         if self.current_location is not None:
             # Entering combat starts a fresh generic-combat cycle. Leaving
             # combat intentionally does not reroll exploration: it restores the
