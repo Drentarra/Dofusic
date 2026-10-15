@@ -141,6 +141,18 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.create_tag_from_main && github.sha || (github.event_name == 'push' && github.ref == 'refs/heads/main') && github.sha || (inputs.release_tag && format('refs/tags/{0}', inputs.release_tag) || github.ref) }}
 
+      - name: Verify one-time release request
+        if: (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        shell: python
+        run: |
+          from pathlib import Path
+          request = Path('.github/release-requests/v1.0.14.txt')
+          if request.read_text(encoding='utf-8').strip() != 'v1.0.14':
+              raise ValueError('La demande de publication v1.0.14 est invalide')
+          version = Path('Data/dofusic/version.py').read_text(encoding='utf-8')
+          if '__version__ = "1.0.14"' not in version:
+              raise ValueError('Le code ne correspond pas au tag attendu v1.0.14')
+
       - name: Set up Python 3.11.9
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
