@@ -8,7 +8,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageTk
 
 from dofusic.app import DofusicController
 from dofusic.config import AppConfig, save_config
-from dofusic.online.session import MusicSession
+from dofusic.audio.session import MusicSession
 from dofusic.ui.brand import create_dofusic_logo
 from dofusic.ui.music_window import MusicWindow
 from dofusic.ui.settings_window import SettingsWindow
@@ -422,7 +422,7 @@ class MainWindow:
             c, x=82, y=381, width=305, height=42, text='Aucune musique',
             fg=GREEN_SOFT, bg='#0a1b17', font_pt=18, fade_width=46,
         )
-        # Contextual escape hatch: visible only while an online track owns audio.
+        # Contextual return to automatic Dofus music during manual local playback.
         _rounded_rect(
             c, 402, 347, 530, 376, radius=9, fill=CARD_FIELD, outline=BORDER, width=1,
             tags=('local-return-hit',),
@@ -515,24 +515,6 @@ class MainWindow:
             pass
         self._apply_theme()
 
-        if not self.config.online_music_enabled:
-            if self.music_window is not None:
-                try:
-                    self.music_window.close()
-                except Exception:
-                    pass
-                self.music_window = None
-            if self.music_session is not None:
-                try:
-                    self.music_session.stop_online()
-                except Exception:
-                    pass
-                try:
-                    self.music_session.close()
-                except Exception:
-                    pass
-                self.music_session = None
-
         for secondary in (self.music_window, self.settings_window):
             if secondary is None:
                 continue
@@ -557,26 +539,15 @@ class MainWindow:
                 self.canvas.itemconfigure(bar, state='normal' if self.config.show_visualizer else 'hidden')
             except tk.TclError:
                 pass
-        # Provider/cache settings are picked up on the next Music panel session.
-        if self.music_session is not None and not self.controller.online_audio_active:
-            music_open = bool(self.music_window and self.music_window.window.winfo_exists())
-            if not music_open:
-                self.music_session.close()
-                self.music_session = None
 
     def _update_music_entry_state(self) -> None:
-        enabled = bool(self.config.online_music_enabled)
         try:
+            self.canvas.itemconfigure('music-icon', fill=self.palette.accent)
             self.canvas.itemconfigure(
-                'music-icon',
-                fill=self.palette.accent if enabled else self.palette.muted,
-            )
-            self.canvas.itemconfigure(
-                'music-button-bg',
-                fill=self.palette.header_chip if enabled else self.palette.card_alt,
+                'music-button-bg', fill=self.palette.header_chip,
                 outline=self.palette.border,
             )
-        except Exception:
+        except tk.TclError:
             pass
 
     def _open_settings(self) -> None:
@@ -593,36 +564,28 @@ class MainWindow:
         return self.music_session
 
     def _open_music(self) -> None:
-        if not self.config.online_music_enabled:
-            return
         if restore_secondary_window(self.music_window):
             return
         self.music_window = None
         session = self._get_music_session()
-        self.music_window = MusicWindow(
-            self.root, session, self.config, self.controller.repository,
-            on_library_saved=lambda _path: None,
-        )
+        self.music_window = MusicWindow(self.root, session, self.config)
 
     def _return_to_local_music(self, _event=None) -> None:
         if self.music_session is not None:
-            self.music_session.stop_online()
+            self.music_session.resume_dofus_music()
         else:
-            try:
-                self.controller.resume_local_audio()
-            except Exception:
-                pass
+            self.controller.resume_local_audio()
         if self.music_window is not None:
             try:
                 if self.music_window.window.winfo_exists():
                     self.music_window._refresh_playback_panel()
-            except Exception:
+            except tk.TclError:
                 pass
         self._update_local_return_button()
 
     def _update_local_return_button(self) -> None:
         try:
-            active = bool(getattr(self.controller, 'audio_override_active', self.controller.online_audio_active))
+            active = bool(self.controller.audio_override_active)
             state = 'normal' if active else 'hidden'
             self.canvas.itemconfigure('local-return-hit', state=state)
         except Exception:
@@ -664,12 +627,7 @@ class MainWindow:
         if getattr(self, '_closed', False):
             return
         try:
-            session = self.music_session
-            current = session.current if session is not None else None
-            if current is not None and current.source == 'online':
-                levels = session.online_visualizer_levels(VISUALIZER_BANDS)
-            else:
-                levels = self.controller.player.spectrum_levels(VISUALIZER_BANDS)
+            levels = self.controller.player.spectrum_levels(VISUALIZER_BANDS)
             self._redraw_visualizer(levels)
         except Exception:
             self._redraw_visualizer((0.0,) * VISUALIZER_BANDS)

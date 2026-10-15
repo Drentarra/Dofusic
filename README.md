@@ -34,11 +34,9 @@ Le format conseillé est **Opus 64 kb/s** pour garder une bonne qualité avec de
 
 Les fichiers nommés `Musique.opus`, `Musique1.opus`, `Musique2.opus`, etc. servent de musiques génériques.
 
-## Musique en ligne
+## Bibliothèque locale
 
-L'onglet Online permet de rechercher et d'écouter une musique directement depuis Dofusic.
-
-Les morceaux téléchargés par Dofusic sont enregistrés en Opus 64 kb/s afin de limiter leur poids.
+La fenêtre « Musiques locales » permet de rechercher dans les fichiers du dossier `Musiques`, de lancer un morceau, de préparer une file d'attente, d'activer la répétition et de revenir à la musique automatique de Dofus. Le logiciel ne recherche ni ne télécharge de musique sur Internet.
 
 ## Installation
 
@@ -72,8 +70,7 @@ Les paramètres permettent notamment de modifier :
 - le volume ;
 - la durée des fondus ;
 - le visualiseur audio ;
-- les options de musique en ligne ;
-- le cache ;
+- la normalisation du volume ;
 - l'apparence de Dofusic.
 
 Les réglages sont conservés entre les lancements.

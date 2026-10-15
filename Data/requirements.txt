@@ -1,4 +1,4 @@
-# Dofusic V25.1 ECO runtime - portable Windows x64
+# Dofusic — dépendances de lecture locale et de reconnaissance Windows x64
 # RapidOCR est installe separement avec --no-deps dans BUILD_PORTABLE.bat
 # afin d'eviter que sa dependance opencv-python installe un second OpenCV.
 
@@ -22,8 +22,5 @@ omegaconf>=2.3,<3
 requests>=2.32,<3
 colorlog>=6,<7
 
-# Online music media retrieval
-# (aucune cle API Google necessaire)
-yt-dlp==2026.8.19
-yt-dlp-ejs==0.8.0
+# Analyse du spectre et normalisation des musiques locales
 imageio-ffmpeg>=0.6,<1

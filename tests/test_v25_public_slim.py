@@ -3,7 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from dofusic.config import AppConfig, load_config
-from dofusic.online.models import OnlineTrack
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,43 +31,10 @@ def test_public_build_has_no_webview_dependency_or_session_button():
     assert 'session youtube' not in music
 
 
-def test_discovery_client_uses_injected_search_runner_without_browser():
-    from dofusic.online.discovery import YouTubeDiscoveryClient
-
-    calls = []
-
-    def runner(query: str, limit: int):
-        calls.append((query, limit))
-        return [
-            {
-                'id': 'abc123xyz00',
-                'title': 'Track test',
-                'uploader': 'Auteur',
-                'duration': 123,
-                'thumbnail': 'https://img.test/a.jpg',
-                'webpage_url': 'https://www.youtube.com/watch?v=abc123xyz00',
-            }
-        ]
-
-    client = YouTubeDiscoveryClient(search_runner=runner, suggestion_runner=lambda _q, _n: [])
-    result = client.search('  test   dofus  ', limit=5)
-    assert calls == [('test dofus', 5)]
-    assert result == (
-        OnlineTrack(
-            video_id='abc123xyz00',
-            title='Track test',
-            author='Auteur',
-            duration_seconds=123,
-            thumbnail_url='https://img.test/a.jpg',
-            source_url='https://www.youtube.com/watch?v=abc123xyz00',
-        ),
-    )
-
-
 def test_default_performance_profile_is_lightweight():
     cfg = AppConfig()
     assert cfg.ui_tick_ms >= 50
-    assert cfg.online_cache_mb <= 128
+    assert not any(name.startswith('online_') for name in cfg.__dataclass_fields__)
 
 
 def test_portable_build_downloads_only_live_ocr_model():
@@ -80,15 +46,6 @@ def test_portable_build_downloads_only_live_ocr_model():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     assert set(module.OCR_MODELS) == {'PP-OCRv6_rec_small.onnx'}
-
-
-def test_thumbnail_service_does_not_leak_per_video_locks(tmp_path):
-    from dofusic.online.thumbnails import ThumbnailService
-
-    service = ThumbnailService(tmp_path, fetcher=lambda *_args: b'not-an-image', max_items=16)
-    track = OnlineTrack(video_id='abc123xyz00', title='x')
-    assert service.get_png(track) == b''
-    assert service.active_lock_count == 0
 
 
 def test_legacy_webview_profile_cleanup_is_scoped_to_dofusic_userdata(tmp_path):

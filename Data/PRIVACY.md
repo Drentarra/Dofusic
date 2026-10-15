@@ -1,17 +1,9 @@
-# Confidentialité — Dofusic V25.1 ECO
+# Confidentialité — Dofusic
 
-Dofusic est une application portable locale. Les réglages, logs et caches restent dans le dossier `Data/UserData/` de la copie utilisée.
+Dofusic utilise des fichiers audio présents localement et des informations visuelles de la fenêtre Dofus.
 
-## Données locales
+Les captures nécessaires à la reconnaissance des zones, positions et combats ne sont pas envoyées à un serveur. Les réglages et les journaux sont conservés dans le dossier portable `Data/UserData/`.
 
-L'OCR analyse uniquement les zones d'écran nécessaires à la détection de Dofus lorsque le jeu est ciblé. Les résultats servent à déterminer la zone/position et la musique à jouer. Dofusic n'envoie pas ces captures à un serveur Dofusic.
+La version locale n'intègre ni recherche de musique distante, ni téléchargement de média, ni navigateur, ni compte YouTube. **La lecture musicale ne nécessite aucune connexion Internet.**
 
-## Musique online
-
-Quand l'utilisateur utilise volontairement la fonction online, Dofusic effectue des requêtes réseau nécessaires à la recherche/suggestion et à la récupération du média via yt-dlp. Ces requêtes sont soumises aux règles et politiques des services contactés.
-
-V25 n'embarque **aucun navigateur WebView2**, ne possède **aucune Session YouTube**, ne demande **aucun mot de passe développeur**, ne lit pas les profils Chrome/Edge/Firefox et ne crée pas de `cookies.txt`.
-
-## Portabilité
-
-Aucune installation Dofusic et aucun Python système ne sont requis pour la release. Le mode local/OCR ne nécessite pas Internet. Les journaux peuvent contenir des informations techniques (chemins, erreurs, noms de zones/pistes) et restent locaux au dossier portable.
+Les connexions réalisées par le constructeur GitHub Actions, pour les dépendances et le modèle OCR, sont distinctes du logiciel distribué.

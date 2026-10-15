@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
+
+from PIL import ImageFont
 
 import cv2
 import numpy as np
@@ -226,8 +229,6 @@ class HUDInputs:
     position: np.ndarray
     combat: np.ndarray | None = None
     transform: HUDTransform = HUDTransform()
-    # Visible text width only; OCR continues to use its independent full crop.
-    zone_display_width: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,37 +264,16 @@ def toolbar_material_columns(image: np.ndarray, *, scale: float = 1.0) -> np.nda
     return (difference <= tolerance).mean(axis=0).astype(np.float32)
 
 
-def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
-    """Follow contiguous HUD button material, not pixels of the game scene."""
-    scale = max(0.35, min(3.0, float(scale)))
-    minimum = max(1, round(38 * scale))
-    if combat is None or getattr(combat, 'size', 0) == 0:
-        return minimum
-    height, width = combat.shape[:2]
-    if height < 10 or width <= minimum:
-        return min(width, minimum)
+def combat_toolbar_frame_width(button_count: int | None, scale: float) -> int:
+    """Stable rectangle from recognized UI state, never from scene brightness.
 
-    coverage = toolbar_material_columns(combat, scale=scale)
-    active = coverage >= 0.32
-    # A uniformly coloured/empty crop has no detectable final button edge.
-    # Do not draw a full-width outline merely because all pixels match.
-    if not np.any(active[minimum:]) or not np.any(coverage[minimum:] < 0.16):
-        return minimum
+    Dofus has a collapsed bar of one/two buttons and a six-button expanded bar.
+    The score used to recognize these states belongs to the combat detector;
+    geometry never guesses from pixels of the map.
+    """
+    sizes = {1: 38, 2: 76, 6: 214}
+    return max(1, round(sizes.get(button_count, 38) * max(.35, min(3., scale))))
 
-    # Gaps between actual buttons are short. Stop on the first longer gap:
-    # on Astrub, scenery to the right is bright but is not toolbar material.
-    max_gap = max(6, round(10 * scale))
-    gap = 0
-    last = minimum
-    for x in range(minimum, width):
-        if active[x]:
-            gap = 0
-            last = x
-        else:
-            gap += 1
-            if gap >= max_gap:
-                break
-    return min(width, max(minimum, last + 1 + max(1, round(3 * scale))))
 
 def tracking_screen_rects(
     *,
@@ -301,6 +281,7 @@ def tracking_screen_rects(
     capture_image_shape: tuple[int, ...],
     hud: HUDInputs,
     geometry: HUDGeometry | None = None,
+    toolbar_buttons: int | None = None,
 ) -> HUDTrackingRects:
     """Map the exact OCR inputs back using the same runtime HUD transform."""
     geometry = geometry or HUDGeometry()
@@ -335,17 +316,14 @@ def tracking_screen_rects(
             max(1, int(round(crop_h * sy_screen))),
         )
 
-    # Le détecteur continue d'analyser les 320 px du HUD. Seul le contour
-    # affiché utilise la longueur du bandeau réellement présent à l'écran.
+    # The detection input remains the whole HUD; the contour follows the
+    # already-recognized number of buttons, never the scenery.
     toolbar = map_reference_rect(
         geometry.combat_x, geometry.combat_y,
         geometry.combat_width, geometry.toolbar_reference_height,
     )
-    visible_width = _visible_combat_toolbar_width(hud.combat, transform.scale)
+    visible_width = combat_toolbar_frame_width(toolbar_buttons, transform.scale)
     zone_rect = map_crop(geometry.zone_x, geometry.zone_y, hud.zone)
-    if hud.zone_display_width is not None:
-        screen_zone_width = max(1, int(round(hud.zone_display_width * sx_screen)))
-        zone_rect = (zone_rect[0], zone_rect[1], screen_zone_width, zone_rect[3])
     return HUDTrackingRects(
         combat=(toolbar[0], toolbar[1], max(1, int(round(visible_width * sx_screen))), toolbar[3]),
         zone=zone_rect,
@@ -498,59 +476,23 @@ def trim_zone_line(
     )
 
 
-def visible_zone_text_width(image: np.ndarray, *, scale: float = 1.0) -> int | None:
-    """Measure the *display* text from its bright glyphs and dark outlines.
+@lru_cache(maxsize=128)
+def zone_label_frame_width(text: str, line_height: int) -> int:
+    """Stable full-label width from accepted OCR, independent of map pixels.
 
-    The OCR's permissive image crop stays unchanged. The visual outline instead
-    uses the first zone-name line only, excluding coordinates and scenery
-    farther right. Return None for absent/unreliable text.
+    This frame is intentionally not part of OCR preprocessing. A cache ensures
+    no font loading or string measurement happens repeatedly for a static map.
     """
-    if image is None or getattr(image, 'size', 0) == 0 or image.ndim != 3:
-        return None
-    h, w = image.shape[:2]
-    y0 = min(h, max(0, round(2 * scale)))
-    y1 = min(h, max(y0 + 1, round(26 * scale)))
-    if h < 8 or w < 15 or y1 <= y0:
-        return None
+    label = str(text or '').strip()
+    size = max(9, round(max(1, int(line_height)) * .46))
+    for font_name in ('arialbd.ttf', 'DejaVuSans-Bold.ttf'):
+        try:
+            font = ImageFont.truetype(font_name, size)
+            return max(1, round(font.getlength(label) + 12))
+        except OSError:
+            continue
+    return max(1, round(ImageFont.load_default().getlength(label) * size / 11 + 12))
 
-    # Most zone labels are short. Analyze only the left part of the HUD;
-    # extend progressively for unusually long names, never truncate them.
-    # This avoids processing the full 1920-pixel strip on every capture.
-    # Word spacing in bold zone names may exceed 13 pixels at full scale.
-    gap_limit = max(12, round(18 * scale))
-    scan_width = min(w, max(256, round(512 * scale)))
-    while True:
-        region = image[y0:y1, :scan_width, :3]
-        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-        bright = (hsv[:, :, 2] >= 215) & (hsv[:, :, 1] <= 75)
-        near_dark = cv2.dilate(
-            (hsv[:, :, 2] <= 108).astype(np.uint8),
-            np.ones((5, 5), dtype=np.uint8),
-        ) > 0
-        columns = _remove_short_true_runs(
-            (bright & near_dark).sum(axis=0) >= 2, min_run=2,
-        )
-        first = np.flatnonzero(columns)
-        if first.size == 0 or int(first[0]) > max(24, round(38 * scale)):
-            return None
-
-        last = -1
-        gap = 0
-        ended = False
-        for x in range(scan_width):
-            if columns[x]:
-                last = x
-                gap = 0
-            elif last >= 0:
-                gap += 1
-                if gap >= gap_limit:
-                    ended = True
-                    break
-        if last < max(6, round(8 * scale)):
-            return None
-        if ended or scan_width >= w:
-            return min(w, last + 1 + max(3, round(6 * scale)))
-        scan_width = min(w, scan_width * 2)
 
 def extract_hud_inputs(
     image: np.ndarray,
@@ -607,6 +549,5 @@ def extract_hud_inputs(
         zone=zone,
         position=position,
         transform=transform,
-        zone_display_width=visible_zone_text_width(zone_max, scale=scale),
     )
 

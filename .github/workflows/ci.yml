@@ -49,11 +49,12 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python -m pytest -q
-      - name: Prepare checked OCR models and QuickJS runtime
+      - name: Prepare checked OCR model
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python -c "import os; from pathlib import Path; from Data.tools.build_portable import prepare_ocr_models, prepare_quickjs_runtime; root = Path.cwd().resolve(); prepare_ocr_models(root / 'Data'); qjs = prepare_quickjs_runtime(root); env = Path(os.environ['GITHUB_ENV']); env.open('a', encoding='utf-8').write(f'DOFUSIC_QJS_BINARY={qjs}\n')"
+          python -c "import sys; sys.path.insert(0, 'Data'); from pathlib import Path; from tools.build_portable import prepare_ocr_models; prepare_ocr_models(Path('Data'))"
+          python Data/tools/prepare_models.py
       - name: Probe required runtimes
         run: |
           $ErrorActionPreference = "Stop"

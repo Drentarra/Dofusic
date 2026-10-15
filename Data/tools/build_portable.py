@@ -11,12 +11,6 @@ import urllib.request
 import zipfile
 
 
-QUICKJS_RUNTIME = {
-    'version': '0.16.2',
-    'url': 'https://github.com/quickjs-ng/quickjs/releases/download/v0.16.2/qjs-windows-x86_64.exe',
-    'sha256': '7b27412de844403545bd151fbe49191b4d5b91a9e15b5db7c863fea54639a82b',
-}
-
 OCR_MODELS = {
     'PP-OCRv6_rec_small.onnx': {
         'url': 'https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx',
@@ -67,16 +61,6 @@ def prepare_ocr_models(data_dir: Path) -> None:
     model_dir = data_dir / 'Models'
     for filename, metadata in OCR_MODELS.items():
         _download_checked(str(metadata['url']), model_dir / filename, str(metadata['sha256']))
-
-
-def prepare_quickjs_runtime(root: Path) -> Path:
-    target = root / '.portable-build' / 'runtime' / 'qjs.exe'
-    _download_checked(
-        str(QUICKJS_RUNTIME['url']),
-        target,
-        str(QUICKJS_RUNTIME['sha256']),
-    )
-    return target
 
 
 def _run(stage: str, command: list[str], *, cwd: Path, timeout: float | None = None) -> None:
@@ -131,24 +115,17 @@ def validate_release(release_dir: Path) -> None:
     if len(ffmpeg_candidates) != 1:
         raise BuildError(f'FFmpeg doit être embarqué une seule fois, trouvé: {len(ffmpeg_candidates)} copies.')
 
-    qjs_candidates = [path for path in data_dir.rglob('qjs.exe') if path.is_file()]
-    if len(qjs_candidates) != 1:
-        raise BuildError(f'QuickJS doit être embarqué une seule fois, trouvé: {len(qjs_candidates)} copies.')
-    if qjs_candidates[0].stat().st_size > 10 * 1024 * 1024:
-        raise BuildError(f'QuickJS anormalement volumineux: {_human_size(qjs_candidates[0].stat().st_size)}')
-
-    if [path for path in data_dir.rglob('deno.exe') if path.is_file()]:
-        raise BuildError('Runtime Deno residuel detecte dans la release slim.')
-    if not [path for path in data_dir.rglob('*') if path.is_file() and 'yt_dlp_ejs' in path.parts]:
-        raise BuildError('Scripts yt_dlp_ejs embarqués introuvables dans Data.')
+    unwanted = {'qjs.exe', 'deno.exe'}
+    if any(p.name.casefold() in unwanted for p in data_dir.rglob('*.exe')):
+        raise BuildError('Runtime JavaScript inutile détecté dans le portable.')
+    if any('yt_dlp' in p.parts or 'yt_dlp_ejs' in p.parts for p in data_dir.rglob('*')):
+        raise BuildError('Dépendance vidéo en ligne détectée dans le portable.')
 
     for filename, metadata in OCR_MODELS.items():
         if _sha256(data_dir / 'Models' / filename) != metadata['sha256']:
             raise BuildError(f'Modèle OCR corrompu dans la release: {filename}')
 
     (data_dir / 'UserData' / 'logs').mkdir(parents=True, exist_ok=True)
-    (data_dir / 'UserData' / 'cache' / 'online').mkdir(parents=True, exist_ok=True)
-    (data_dir / 'UserData' / 'cache' / 'thumbnails').mkdir(parents=True, exist_ok=True)
 
 
 def _dir_size(path: Path) -> int:
@@ -283,8 +260,6 @@ def build(root: Path) -> Path:
 
     validate_source(root, data_dir)
     prepare_ocr_models(data_dir)
-    quickjs = prepare_quickjs_runtime(root)
-    os.environ['DOFUSIC_QJS_BINARY'] = str(quickjs)
     _run('Tests automatiques', [sys.executable, '-m', 'pytest', '-q'], cwd=root)
     _run('Validation des dépendances et de la base', [sys.executable, str(data_dir / 'tools' / 'runtime_probe.py')], cwd=data_dir)
     _run('Validation locale du moteur OCR', [sys.executable, str(data_dir / 'tools' / 'prepare_models.py')], cwd=data_dir, timeout=180)

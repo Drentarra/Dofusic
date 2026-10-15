@@ -5,33 +5,6 @@ import json
 import numpy as np
 
 from dofusic.config import AppConfig
-from dofusic.online import discovery
-
-
-def test_youtube_suggestions_use_clean_json_firefox_client(monkeypatch):
-    seen = {}
-
-    class _Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self, _limit):
-            return json.dumps(['sha', ['shaka ponk', 'shaka ponk im picky']]).encode('utf-8')
-
-    def fake_urlopen(request, timeout):
-        seen['url'] = request.full_url
-        seen['timeout'] = timeout
-        return _Response()
-
-    monkeypatch.setattr(discovery, 'urlopen', fake_urlopen)
-    values = tuple(discovery._default_suggestion_runner('sha', 8))
-
-    assert values == ('shaka ponk', 'shaka ponk im picky')
-    assert 'client=firefox' in seen['url']
-    assert 'ds=yt' in seen['url']
 
 
 def test_default_runtime_profile_is_low_load():
@@ -70,11 +43,3 @@ def test_ocr_change_gate_detects_real_text_region_change_before_idle_refresh():
     assert gate.should_scan(after, now=1.2)
 
 
-def test_search_result_thumbnail_prefers_small_youtube_image():
-    track = discovery._track_from_row({
-        'id': 'abcdefghijk',
-        'title': 'Titre',
-        'thumbnail': 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg',
-    })
-    assert track is not None
-    assert track.thumbnail_url == 'https://i.ytimg.com/vi/abcdefghijk/mqdefault.jpg'

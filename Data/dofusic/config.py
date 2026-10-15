@@ -10,7 +10,7 @@ from pathlib import Path
 
 @dataclass(slots=True)
 class AppConfig:
-    config_version: int = 26
+    config_version: int = 27
     process_name: str = 'dofus.exe'
 
     capture_fps: int = 10
@@ -42,13 +42,8 @@ class AppConfig:
     debug: bool = False
     music_dir: str = ''
 
-    # Stable user-facing UI/online music preferences.
+    # Local music and appearance preferences.
     theme: str = 'emerald'
-    online_music_enabled: bool = True
-    online_suggestions: bool = True
-    online_suggest_delay_ms: int = 320
-    online_search_results: int = 8
-    online_cache_mb: int = 128
     show_visualizer: bool = True
     normalize_loudness: bool = True
     always_on_top: bool = False
@@ -79,9 +74,6 @@ class AppConfig:
             'volume': max(0, min(100, int(self.volume))),
             'fade_ms': max(0, min(5000, int(self.fade_ms))),
             'theme': self.theme.strip().lower() if self.theme.strip().lower() in {'emerald', 'bonta', 'brakmar', 'arcane', 'ivory', 'graphite'} else 'emerald',
-            'online_suggest_delay_ms': max(150, min(1200, int(self.online_suggest_delay_ms))),
-            'online_search_results': max(3, min(20, int(self.online_search_results))),
-            'online_cache_mb': max(64, min(4096, int(self.online_cache_mb))),
         })
         return AppConfig(**values)
 
@@ -163,13 +155,11 @@ def _apply_dict(config: AppConfig, data: dict) -> AppConfig:
     return AppConfig(**values).sanitized()
 
 
-# Only stable user choices survive a schema migration. Runtime/OCR tuning is
-# version-owned so old alpha settings cannot silently degrade a newer release.
+# The removed streaming preferences are intentionally ignored when reading a
+# v1.0.14 config. Keep the user's existing local volume, theme and sound options.
 _MIGRATION_KEEP = frozenset({
     'process_name', 'volume', 'mute', 'fallback_stem', 'debug', 'music_dir',
-    'theme', 'online_music_enabled', 'online_suggestions', 'online_suggest_delay_ms',
-    'online_search_results', 'online_cache_mb',
-    'always_on_top',
+    'theme', 'always_on_top', 'show_visualizer', 'normalize_loudness', 'fade_ms',
 })
 
 
@@ -178,10 +168,14 @@ def _migrate_current_config_data(data: dict) -> dict:
         version = int(data.get('config_version', 0))
     except (TypeError, ValueError):
         version = 0
-    current_version = AppConfig().config_version
-    if version >= current_version:
+    if version >= AppConfig().config_version:
         return data
-    return {key: value for key, value in data.items() if key in _MIGRATION_KEEP}
+    # Audio/visualizer defaults changed in v26; keep them only if they
+    # belonged to a v26+ user configuration, not old experimental profiles.
+    choices = _MIGRATION_KEEP if version >= 26 else _MIGRATION_KEEP - {
+        'show_visualizer', 'normalize_loudness', 'fade_ms',
+    }
+    return {key: value for key, value in data.items() if key in choices}
 
 
 def load_config(path: Path | str | None = None) -> AppConfig:

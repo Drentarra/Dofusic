@@ -25,7 +25,7 @@ def test_repository_manifest_has_all_file_types(tmp_path):
     from Data.tools.audit_repository import collect
     root = Path(__file__).resolve().parents[1]
     result = collect(root)
-    assert result['tracked_files'] >= 290
+    assert result['tracked_files'] >= 280
     assert result['invalid_files'] == []
     assert result['verified_files'] == result['tracked_files']
     assert 'Musiques/' in ' '.join(result['files'])

@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 
 from dofusic.audio.player import MusicPlayer, SPECTRUM_BANDS, _SPECTRUM_CACHE_LIMIT_BYTES
-from dofusic.online.thumbnails import ThumbnailService
 from dofusic.ui.main_window import MainWindow
 from dofusic.ui.music_window import MusicWindow
 from dofusic.version import __version__
@@ -38,41 +37,25 @@ def test_oversized_spectrum_remains_visible_but_is_not_kept_in_revisit_cache():
     assert path not in player._spectrum_cache
 
 
-def test_thumbnail_prune_preserves_active_producer_and_bounded_cache(tmp_path):
-    service = ThumbnailService(tmp_path, max_items=16)
-    for i in range(20):
-        path = tmp_path / f'{i:011d}_112x63.png'
-        path.write_bytes(b'a' * 64)
-        import os
-        os.utime(path, (100.0 + i, 100.0 + i))
-    active = tmp_path / f'{0:011d}_112x63.png'
-    newest = tmp_path / f'{19:011d}_112x63.png'
-    with service._key_lock(active.name):
-        service._prune(keep=newest)
-        assert active.is_file()
-        assert newest.is_file()
-        assert len(list(tmp_path.glob('*.png'))) == 16
-    assert service.active_lock_count == 0
-
-
 def test_music_panel_close_is_idempotent():
     closed = []
     window = MusicWindow.__new__(MusicWindow)
     window._closed = False
     window._after_id = None
-    window._remember_current_search = lambda: closed.append('remember')
+    window.session = SimpleNamespace(remember_search=lambda value: closed.append(('remember', value)))
+    window.search_var = SimpleNamespace(get=lambda: 'Astrub')
     window.window = SimpleNamespace(destroy=lambda: closed.append('destroy'))
     window.close()
     window.close()
     window._poll()
-    assert closed == ['remember', 'destroy']
+    assert closed == [('remember', 'Astrub'), 'destroy']
 
 
 def test_title_and_version_argument_share_single_release_version(capsys):
     import inspect
     from Data.main import _parse_args
 
-    assert __version__ == '1.0.14'
+    assert __version__ == '1.0.15'
     init_ast = ast.parse(inspect.getsource(MainWindow.__init__).replace('    def ', 'def ', 1))
     calls = (
         node for node in ast.walk(init_ast)
@@ -87,4 +70,4 @@ def test_title_and_version_argument_share_single_release_version(capsys):
     with pytest.raises(SystemExit) as exc:
         _parse_args(['--version'])
     assert exc.value.code == 0
-    assert 'Dofusic 1.0.14' in capsys.readouterr().out
+    assert 'Dofusic 1.0.15' in capsys.readouterr().out

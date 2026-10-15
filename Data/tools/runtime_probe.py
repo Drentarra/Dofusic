@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 from pathlib import Path
 import platform
-import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,7 +13,7 @@ from dofusic.config import database_path, default_music_dir
 from dofusic.location.repository import DofusRepository
 REQUIRED_RUNTIME_MODULES = (
     'rapidocr', 'onnxruntime', 'numpy', 'cv2', 'rapidfuzz', 'mss',
-    'PIL', 'pygame', 'yt_dlp', 'yt_dlp_ejs', 'imageio_ffmpeg',
+    'PIL', 'pygame', 'imageio_ffmpeg',
     'win32gui', 'win32ui', 'win32con', 'win32process', 'tkinter',
 )
 
@@ -36,23 +35,6 @@ def main() -> int:
             failures += 1
             print(f'[ERREUR] Module {name}: {exc}')
 
-
-    try:
-        from dofusic.online.retrieval import resolve_quickjs_executable
-        qjs_bin = resolve_quickjs_executable()
-        if not qjs_bin.is_file():
-            raise FileNotFoundError(qjs_bin)
-        kwargs = {'capture_output': True, 'text': True, 'check': False}
-        if sys.platform == 'win32' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
-            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
-        result = subprocess.run([str(qjs_bin), '--version'], **kwargs)
-        if result.returncode != 0:
-            raise RuntimeError((result.stderr or result.stdout or '').strip() or f'code {result.returncode}')
-        version_line = (result.stdout or '').strip().splitlines()[0] if (result.stdout or '').strip() else '?'
-        print(f'[OK] QuickJS: {version_line} ({qjs_bin})')
-    except Exception as exc:
-        failures += 1
-        print(f'[ERREUR] Runtime QuickJS: {exc}')
 
     db = database_path()
     if not db.is_file():

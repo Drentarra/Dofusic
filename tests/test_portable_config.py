@@ -33,7 +33,7 @@ def test_models_dir_is_inside_data(monkeypatch, tmp_path):
 def test_v26_config_schema_removes_legacy_scheduler_tuning():
     cfg = config.AppConfig()
 
-    assert cfg.config_version == 26
+    assert cfg.config_version == 27
     assert not hasattr(cfg, 'signature_change_min')
     assert not hasattr(cfg, 'zone_ocr_force_interval_sec')
     assert not hasattr(cfg, 'position_ocr_force_interval_sec')

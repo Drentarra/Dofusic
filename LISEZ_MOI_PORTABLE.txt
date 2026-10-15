@@ -25,17 +25,17 @@ PROFIL PORTABLE
 - Mode développeur et mot de passe supprimés.
 - Session YouTube supprimée.
 - pywebview / WebView2 / pythonnet supprimés du runtime.
-- Recherche online légère via yt-dlp.
+- Bibliothèque musicale exclusivement locale.
 - Un seul modèle OCR zone PP-OCRv6 Small est embarqué pour le chemin live.
 - Profil ECO : capture 10 FPS, UI 12,5 Hz et OCR adaptatif.
 - Visualiseur FFT désactivé par défaut ; il reste réactivable dans Paramètres.
-- Cache online borné à 128 Mo par défaut.
+- Aucune dépendance aux plateformes musicales.
 
 Le mode OCR/local fonctionne hors ligne. Une connexion Internet n'est utilisée que
-quand la fonction Musique online est utilisée.
+les morceaux locaux sont lus.
 
 AUDIO / STOCKAGE
 ----------------
-- Online : cache et ajout Musiques en Opus 64 kb/s.
+- Musiques : lecture et file d'attente de fichiers locaux.
 - Local : formats audio courants acceptés via FFmpeg.
 - Format conseillé : Opus 64 kb/s.
