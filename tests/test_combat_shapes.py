@@ -38,11 +38,20 @@ def test_single_button_calibration_keeps_combat_detectable(scale):
     assert observation.confidence >= 0.60
 
 
-@pytest.mark.parametrize('left,right', [(38, 320), (312, 320)])
-def test_panel_beside_plus_is_unknown_even_during_scale_refinement(left, right):
+def test_panel_immediately_beside_plus_is_unknown_even_during_scale_refinement():
     image = collapsed_toolbar()
-    image[:37, left:right] = (90, 70, 50)
+    image[:37, 38:113] = (90, 70, 50)
     assert analyze_combat_toolbar(extract_hud_inputs(image).combat).in_combat is None
+
+
+def test_distant_pixels_matching_toolbar_material_do_not_cancel_combat():
+    # Unlike the button right next to '+', distant scenery conveys no combat
+    # information. The original full-strip test failed on buildings and rocks.
+    image = collapsed_toolbar()
+    image[:37, 165:200] = (65, 60, 55)
+    image[:37, 312:320] = (90, 70, 50)
+    observation = analyze_combat_toolbar(extract_hud_inputs(image).combat)
+    assert observation.in_combat is True
 
 
 def test_inventory_covering_toolbar_is_unknown():
