@@ -57,6 +57,7 @@ def test_frozen_runtime_does_not_bundle_deno_python_package():
     main = (DATA / 'main.py').read_text(encoding='utf-8')
     assert "'deno', 'yt_dlp_ejs'" not in spec
     assert "'deno', 'imageio_ffmpeg'" not in main
-    assert 'resolve_quickjs_executable' in main
+    assert 'resolve_quickjs_executable' not in main
+    assert "'imageio_ffmpeg'" in main
 
 
