@@ -23,6 +23,8 @@ class CombatObservation:
     luminance_ratio: float
     first_peak: float
     reference_peak: float
+    # 1 = '+' seul, 2 = '+' et second bouton, 6 = volet déroulé.
+    toolbar_buttons: int | None = None
 
 
 # The new toolbar has a +/- control followed by 34-pixel icon slots.
@@ -145,7 +147,7 @@ def analyze_combat_toolbar(image: np.ndarray, geometry: HUDGeometry | None = Non
         if candidate.in_combat is not None:
             candidates.append(candidate)
     if not candidates or len({candidate.in_combat for candidate in candidates}) > 1:
-        return unknown
+        return observation
     return max(candidates, key=lambda candidate: candidate.confidence)
 
 
@@ -177,10 +179,22 @@ def _classify_toolbar(canonical: np.ndarray, *, allow_collapsed_combat: bool = T
     if max(plus, minus) < 0.72:
         return unknown
 
+    # The very first control determines physical bar length when unfolded.
+    # This is geometrical evidence, independent of whether all icons match.
+    expanded = minus >= 0.72 and minus > plus
+    if expanded:
+        buttons = 6
+    else:
+        buttons = 2 if max(
+            _shape_score(masks[1], 'eye'),
+            _shape_score(masks[1], 'havresac_gear'),
+        ) >= 0.78 else 1
+    unknown = CombatObservation(None, 0.0, 0.0, 0.0, 0.0, buttons)
+
     def result(state: bool, score: float) -> CombatObservation:
         # Historical scalar fields are retained for controller/log compatibility;
         # shape similarity replaces the old luminance ratio diagnostic.
-        return CombatObservation(state, min(1.0, score), score, 0.0, 0.0)
+        return CombatObservation(state, min(1.0, score), score, 0.0, 0.0, buttons)
 
     if plus > minus and plus >= 0.72:
         eye = _shape_score(masks[1], 'eye')
