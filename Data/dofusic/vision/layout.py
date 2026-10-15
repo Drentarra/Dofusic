@@ -190,6 +190,8 @@ class HUDInputs:
     position: np.ndarray
     combat: np.ndarray | None = None
     transform: HUDTransform = HUDTransform()
+    # Visible text width only; OCR continues to use its independent full crop.
+    zone_display_width: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,41 +201,58 @@ class HUDTrackingRects:
     position: tuple[int, int, int, int]
 
 
-def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
-    """Largeur réelle de la barre visible, distincte du rectangle de reconnaissance.
+def toolbar_material_columns(image: np.ndarray, *, scale: float = 1.0) -> np.ndarray:
+    """Fraction of each column resembling the first toolbar button material.
 
-    La barre peut n'afficher que le bouton +/-; les vides entre icônes
-    sont tolérés, sans inclure une fenêtre ou un élément éloigné.
+    Absolute brightness is deliberately not used: a Dofus scene may be black,
+    sunlit, or textured. The HUD has a distinctive, relatively uniform material
+    shared by its icon slots; the scenery outside need not be dark.
     """
+    if image is None or getattr(image, 'size', 0) == 0 or image.ndim not in (2, 3):
+        return np.empty((0,), dtype=np.float32)
+    h, w = image.shape[:2]
+    scale = max(0.35, min(3.0, float(scale)))
+    y0, y1 = min(h, round(8 * scale)), min(h, round(29 * scale))
+    x0, x1 = min(w, round(5 * scale)), min(w, round(9 * scale))
+    if y1 <= y0 or x1 <= x0:
+        return np.zeros(w, dtype=np.float32)
+    patch = image[y0:y1]
+    if patch.ndim == 2:
+        patch = patch[:, :, None]
+    background = np.median(patch[:, x0:x1], axis=(0, 1))
+    difference = np.abs(patch.astype(np.float32) - background).max(axis=2)
+    return (difference <= 34).mean(axis=0).astype(np.float32)
+
+
+def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
+    """Follow contiguous HUD button material, not pixels of the game scene."""
     scale = max(0.35, min(3.0, float(scale)))
     minimum = max(1, round(38 * scale))
-    if combat is None or combat.size == 0 or combat.ndim < 2:
+    if combat is None or getattr(combat, 'size', 0) == 0:
         return minimum
     height, width = combat.shape[:2]
     if height < 10 or width <= minimum:
         return min(width, minimum)
 
-    y0 = min(height - 1, max(0, round(8 * scale)))
-    y1 = min(height, max(y0 + 1, round(29 * scale)))
-    strip = combat[y0:y1]
-    brightness = strip.max(axis=2) if strip.ndim == 3 else strip
-    active = np.count_nonzero(brightness >= 14, axis=0) >= max(1, round(0.32 * len(brightness)))
-    if not np.any(active[:minimum]) or not np.any(active[minimum:]):
+    coverage = toolbar_material_columns(combat, scale=scale)
+    active = coverage >= 0.32
+    if not np.any(active[minimum:]):
         return minimum
 
-    max_gap = max(6, round(9 * scale))
+    # Gaps between actual buttons are short. Stop on the first longer gap:
+    # on Astrub, scenery to the right is bright but is not toolbar material.
+    max_gap = max(6, round(10 * scale))
     gap = 0
-    end = width
+    last = minimum
     for x in range(minimum, width):
         if active[x]:
             gap = 0
+            last = x
         else:
             gap += 1
             if gap >= max_gap:
-                end = x - gap + 1
                 break
-    return min(width, max(minimum, end + max(1, round(2 * scale))))
-
+    return min(width, max(minimum, last + 1 + max(1, round(3 * scale))))
 
 def tracking_screen_rects(
     *,
@@ -282,9 +301,13 @@ def tracking_screen_rects(
         geometry.combat_width, geometry.toolbar_reference_height,
     )
     visible_width = _visible_combat_toolbar_width(hud.combat, transform.scale)
+    zone_rect = map_crop(geometry.zone_x, geometry.zone_y, hud.zone)
+    if hud.zone_display_width is not None:
+        screen_zone_width = max(1, int(round(hud.zone_display_width * sx_screen)))
+        zone_rect = (zone_rect[0], zone_rect[1], screen_zone_width, zone_rect[3])
     return HUDTrackingRects(
         combat=(toolbar[0], toolbar[1], max(1, int(round(visible_width * sx_screen))), toolbar[3]),
-        zone=map_crop(geometry.zone_x, geometry.zone_y, hud.zone),
+        zone=zone_rect,
         position=map_crop(geometry.position_x, geometry.position_y, hud.position),
     )
 
@@ -434,6 +457,53 @@ def trim_zone_line(
     )
 
 
+def visible_zone_text_width(image: np.ndarray, *, scale: float = 1.0) -> int | None:
+    """Measure the *display* text from its bright glyphs and dark outlines.
+
+    The OCR's permissive image crop stays unchanged. The visual outline instead
+    uses the first zone-name line only, excluding coordinates and scenery
+    farther right. Return None for absent/unreliable text.
+    """
+    if image is None or getattr(image, 'size', 0) == 0 or image.ndim != 3:
+        return None
+    h, w = image.shape[:2]
+    y0 = min(h, max(0, round(2 * scale)))
+    y1 = min(h, max(y0 + 1, round(26 * scale)))
+    if h < 8 or w < 15 or y1 <= y0:
+        return None
+
+    # White/yellowish game text is contrasted against a dark stroke. Requiring
+    # both prevents bright scenery from stretching the outline arbitrarily.
+    region = image[y0:y1, :, :3]
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    bright = (hsv[:, :, 2] >= 215) & (hsv[:, :, 1] <= 75)
+    near_dark = cv2.dilate(
+        (hsv[:, :, 2] <= 108).astype(np.uint8),
+        np.ones((5, 5), dtype=np.uint8),
+    ) > 0
+    columns = _remove_short_true_runs(
+        (bright & near_dark).sum(axis=0) >= 2, min_run=2,
+    )
+    first = np.flatnonzero(columns)
+    if first.size == 0 or int(first[0]) > max(24, round(38 * scale)):
+        return None
+
+    gap_limit = max(8, round(13 * scale))
+    last = -1
+    gap = 0
+    for x in range(w):
+        if columns[x]:
+            last = x
+            gap = 0
+        elif last >= 0:
+            gap += 1
+            if gap >= gap_limit:
+                break
+    if last < max(6, round(8 * scale)):
+        return None
+    return min(w, last + 1 + max(3, round(6 * scale)))
+
+
 def extract_hud_inputs(
     image: np.ndarray,
     geometry: HUDGeometry | None = None,
@@ -489,5 +559,6 @@ def extract_hud_inputs(
         zone=zone,
         position=position,
         transform=transform,
+        zone_display_width=visible_zone_text_width(zone_max, scale=scale),
     )
 
