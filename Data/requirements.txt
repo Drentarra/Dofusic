@@ -3,7 +3,7 @@
 # afin d'eviter que sa dependance opencv-python installe un second OpenCV.
 
 # OCR / inference
-onnxruntime==1.29.0
+onnxruntime==1.30.0
 numpy>=2.0,<3.0
 opencv-python-headless>=4.10,<5.0
 rapidfuzz>=3.14,<4.0
