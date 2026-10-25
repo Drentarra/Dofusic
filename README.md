@@ -27,6 +27,8 @@ Dofusic adapte automatiquement la musique à la zone et aux combats de **Dofus**
 
 Dofusic détecte le jeu, suit votre zone et lance la musique correspondante. **Les musiques sont déjà fournies.**
 
+Le ZIP de la release GitHub Actions contient `Dofusic.exe`, `Data/` et les 162 musiques du dossier `Musiques/`.
+
 ## Ajouter ou remplacer des musiques
 
 Ouvrez le dossier `Musiques/` :
