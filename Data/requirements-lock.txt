@@ -1,4 +1,4 @@
-# Dofusic V25.1 ECO portable-build dependency lock for CPython 3.11.9 x64.
+# Dofusic — dépendances verrouillées pour CPython 3.11.9 Windows x64.
 # RapidOCR is installed separately with --no-deps by BUILD_PORTABLE.bat.
 onnxruntime==1.29.0
 numpy==2.4.6
@@ -16,8 +16,6 @@ tqdm==4.70.1
 omegaconf==2.3.1
 requests==2.34.2
 colorlog==6.12.0
-yt-dlp==2026.8.19
-yt-dlp-ejs==0.8.0
 imageio-ffmpeg==0.6.0
 pyinstaller==6.22.2
 pytest==9.1.1

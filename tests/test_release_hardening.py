@@ -1,10 +1,9 @@
-from pathlib import Path
 import json
 import zipfile
+from pathlib import Path
 
 import pytest
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -96,7 +95,7 @@ def test_final_zip_validator_accepts_clean_layout_with_music_marker(tmp_path):
     with zipfile.ZipFile(source, 'w') as archive:
         archive.writestr('Dofusic/Dofusic.exe', b'exe')
         archive.writestr('Dofusic/Data/runtime.bin', b'data')
-        archive.writestr('Dofusic/Musiques/README.txt', b'Ajoutez vos musiques ici.')
+        archive.writestr('Dofusic/Musiques/Incarnam.opus', b'OggS')
 
     result = verifier.finalize_release(source, checksum)
     assert result['file_count'] == 3
@@ -132,3 +131,16 @@ def test_sbom_validation_requires_locked_packages(tmp_path):
     }), encoding='utf-8')
 
     assert verifier.validate_sbom(sbom, lock)['spec_version'] == '1.6'
+
+
+def test_downloadable_windows_artifact_contains_only_the_public_zip():
+    workflow = _workflow('build-release.yml')
+    final_steps = workflow['jobs']['release-windows']['steps']
+    published = next(step for step in final_steps if step['name'] == 'Upload verification artifact')
+    assert published['with']['path'] == 'Release/Dofusic.zip'
+    build_steps = workflow['jobs']['build-windows']['steps']
+    transfer = next(step for step in build_steps if step['name'] == 'Transfer build to verification job')
+    assert transfer['with']['name'].startswith('INTERNAL-')
+    assert str(transfer['with']['retention-days']) == '1'
+    # Reports and supply-chain evidence are preserved internally for CI checks.
+    assert 'Release/BUILD_PROVENANCE.json' in transfer['with']['path']

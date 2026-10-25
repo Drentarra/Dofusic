@@ -4,6 +4,7 @@ import cv2
 import numpy as np
 
 from dofusic.models import PositionOCRResult
+from dofusic.vision.overlay_projection import project_position_overlay
 
 
 def _result(raw: str, x: int, y: int) -> PositionOCRResult:
@@ -71,10 +72,9 @@ def test_layout_no_longer_computes_position_overlay_from_pixels():
 
 
 def test_controller_maps_full_position_roi_to_accepted_coordinate_overlay_width():
-    from dofusic.app import DofusicController
 
     result = _result('1, -36 - Niveau 140', 1, -36)
-    rect = DofusicController._position_overlay_screen_rect(
+    rect = project_position_overlay(
         full_rect=(100, 200, 180, 29),
         result=result,
         roi_height=29,

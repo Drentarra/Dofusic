@@ -11,7 +11,6 @@ import ast
 import json
 from pathlib import Path
 
-
 SOURCE_FOLDERS = ('Data/dofusic', 'Data/tools', '.github/scripts', 'tests')
 SOURCE_FILES = ('Data/main.py',)
 

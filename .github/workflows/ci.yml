@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -34,6 +34,26 @@ jobs:
           python -m pip install -r Data/requirements-lock.txt
           python -m pip install --no-deps rapidocr==3.9.2
           python -c "import importlib.metadata as m; d={x.metadata.get('Name','').lower() for x in m.distributions()}; assert 'opencv-python' not in d, 'opencv-python installed twice'; assert 'opencv-python-headless' in d, 'opencv-python-headless missing'"
+      - name: Check source hygiene
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python -m pip install -r requirements-dev.txt
+          python -m ruff check .
+      - name: Check soundtrack availability
+        id: soundtrack
+        shell: python
+        run: |
+          import os
+          import runpy
+          from pathlib import Path
+          builder = runpy.run_path('Data/tools/build_portable.py')
+          root = Path.cwd()
+          available = builder['validate_source'](root, root / 'Data', require_music=False)
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f'available={str(available).lower()}\n')
+          if not available:
+              print('Source-only checkout: portable packaging skipped; all other checks remain required.')
       - name: Audit every Python source and test file
         run: |
           $ErrorActionPreference = "Stop"
@@ -44,64 +64,59 @@ jobs:
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/audit_repository.py --output Audit/repository_files.json --summary Audit/REPOSITORY.md
-      - name: Run tests
+      - name: Test with branch coverage guard
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python -m pytest -q
-      - name: Prepare checked OCR models and QuickJS runtime
+          python -m coverage run --branch --source=dofusic -m pytest -q
+          python -m coverage report --fail-under=55
+          python -m coverage json -o Audit/coverage.json
+      - name: Prepare checked OCR model
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python -c "import os; from pathlib import Path; from Data.tools.build_portable import prepare_ocr_models, prepare_quickjs_runtime; root = Path.cwd().resolve(); prepare_ocr_models(root / 'Data'); qjs = prepare_quickjs_runtime(root); env = Path(os.environ['GITHUB_ENV']); env.open('a', encoding='utf-8').write(f'DOFUSIC_QJS_BINARY={qjs}\n')"
+          python -c "import sys; sys.path.insert(0, 'Data'); from pathlib import Path; from tools.build_portable import prepare_ocr_models; prepare_ocr_models(Path('Data'))"
+          python Data/tools/prepare_models.py
       - name: Probe required runtimes
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/runtime_probe.py
-          python Data/tools/prepare_models.py
       - name: Probe OCR worker startup and shutdown
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
           python Data/tools/ocr_worker_probe.py
-      - name: Check out v1.0.11 for comparative benchmarks
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: v1.0.11
-          path: .audit-reference
-          persist-credentials: false
-          filter: blob:none
-          sparse-checkout: |
-            Data/dofusic
-            Data/dofus_data.sqlite
-          sparse-checkout-cone-mode: false
-      - name: Benchmark reference and candidate
+      - name: Benchmark current OCR, HUD and geographic resolver
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          $env:PYTHONPATH = (Resolve-Path ".audit-reference/Data").Path
-          python Data/tools/benchmark_runtime.py --db .audit-reference/Data/dofus_data.sqlite --models Data/Models --output Audit/reference.json
           $env:PYTHONPATH = (Resolve-Path "Data").Path
-          python Data/tools/benchmark_runtime.py --db Data/dofus_data.sqlite --models Data/Models --output Audit/candidate.json
-          python Data/tools/benchmark_runtime.py --compare Audit/reference.json Audit/candidate.json --output Audit/COMPARAISON.md
-          Get-Content Audit/COMPARAISON.md
-      - name: Build portable control
+          python Data/tools/benchmark_runtime.py --db Data/dofus_data.sqlite --models Data/Models --output Audit/benchmark_current.json
+          python Data/tools/check_benchmark.py Audit/benchmark_current.json
+      - name: Report current algorithm complexity
         run: |
           $ErrorActionPreference = "Stop"
           $PSNativeCommandUseErrorActionPreference = $true
-          python Data/tools/build_portable.py --root .
+          python Data/tools/complexity_report.py --root . --output Audit/complexity_current.json
+      - name: Build portable control
+        if: steps.soundtrack.outputs.available == 'true'
+        run: |
+          $ErrorActionPreference = "Stop"
+          $PSNativeCommandUseErrorActionPreference = $true
+          python Data/tools/build_portable.py --root . --skip-tests
           Get-Content Release/BUILD_SIZE_REPORT.txt
-      - name: Upload tested Windows portable
+      - name: Upload checks and available Windows portable
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: Dofusic-portable-combat-shapes
+          name: Dofusic-portable-ci
           path: |
-            Release/Dofusic_V25_1_ECO_WINDOWS_X64.zip
+            Release/Dofusic_*_LOCAL_WINDOWS_X64_AVEC_MUSIQUES.zip
             Release/BUILD_SIZE_REPORT.txt
-            Audit/reference.json
-            Audit/candidate.json
-            Audit/COMPARAISON.md
+            Release/PORTABLE_ARCHIVE_NAME.txt
+            Audit/benchmark_current.json
+            Audit/complexity_current.json
+            Audit/coverage.json
             Audit/source_inventory.json
             Audit/SOURCES.md
             Audit/repository_files.json

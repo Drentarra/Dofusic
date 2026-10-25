@@ -5,8 +5,9 @@ import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from dofusic.location.repository import DofusRepository, PlaceAliasRecord
+from dofusic.location.repository import DofusRepository
 from dofusic.models import Coordinates, LocationEvidence, LocationKind, LocationMatch, LocationRecord, MatchMode
+from dofusic.numeric import clamp_confidence
 from dofusic.text import (
     TextMatchMode,
     clean_text,
@@ -14,7 +15,6 @@ from dofusic.text import (
     important_words,
     match_key,
     norm_key,
-    normalize_text,
     text_similarity,
     unique_texts,
 )
@@ -31,24 +31,13 @@ class _CoordinateContext:
 @dataclass(frozen=True, slots=True)
 class PreparedLocation:
     location: LocationRecord
-    normalized_name: str
     match_key: str
     compact_key: str
     content_words: tuple[str, ...]
     important_words: tuple[str, ...]
     candidate_words: tuple[str, ...]
-    parent_normalized_name: str
     parent_compact_key: str
     parent_content_words: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class PreparedAlias:
-    record: PlaceAliasRecord
-    normalized_alias: str
-    match_key: str
-    content_words: tuple[str, ...]
-    important_words: tuple[str, ...]
 
 
 class LocationResolver:
@@ -59,7 +48,6 @@ class LocationResolver:
         self.locations = repository.all_locations()
         self.aliases = repository.place_aliases()
         self.prepared_locations = tuple(self._prepare_location(item) for item in self.locations)
-        self.prepared_aliases = tuple(self._prepare_alias(item) for item in self.aliases)
 
         exact: dict[tuple[str, ...], list[PreparedLocation]] = defaultdict(list)
         tokens: dict[str, list[PreparedLocation]] = defaultdict(list)
@@ -86,31 +74,20 @@ class LocationResolver:
         }
         self._prepared_by_key = by_key
         self._last_coordinate_context: tuple[Coordinates, _CoordinateContext] | None = None
+        self._last_text_matches: tuple[str, tuple[LocationMatch, ...]] | None = None
 
     @staticmethod
     def _prepare_location(location: LocationRecord) -> PreparedLocation:
         parent = location.parent_area_name or ''
         return PreparedLocation(
             location=location,
-            normalized_name=normalize_text(location.name),
             match_key=match_key(location.name),
             compact_key=norm_key(location.name),
             content_words=content_words(location.name),
             important_words=important_words(location.name),
             candidate_words=tuple(word for word in content_words(location.name) if word not in {'tour', 'donjon', 'taverne', 'salle'}),
-            parent_normalized_name=normalize_text(parent),
             parent_compact_key=norm_key(parent),
             parent_content_words=content_words(parent),
-        )
-
-    @staticmethod
-    def _prepare_alias(record: PlaceAliasRecord) -> PreparedAlias:
-        return PreparedAlias(
-            record=record,
-            normalized_alias=normalize_text(record.alias),
-            match_key=match_key(record.alias),
-            content_words=content_words(record.alias),
-            important_words=important_words(record.alias),
         )
 
     @staticmethod
@@ -275,7 +252,7 @@ class LocationResolver:
             and top_loc.parent_area_id == cand_loc.id
         )
 
-    def _structured_pair_match(self, raw_text: str, coordinate_context: _CoordinateContext) -> LocationMatch | None:
+    def _structured_pair_match(self, raw_text: str) -> LocationMatch | None:
         match = re.fullmatch(r'\s*(.+?)\s*\(([^()]*)\)\s*', clean_text(raw_text))
         if not match:
             return None
@@ -294,7 +271,6 @@ class LocationResolver:
             origin = 'structured-compact'
 
         location = prepared.location
-        coord_bonus, _support = self._coordinate_bonus(location, coordinate_context)
         return LocationMatch(
             location=location,
             score=100.0,
@@ -303,17 +279,14 @@ class LocationResolver:
             exact=True,
             mode=MatchMode.EXACT,
             context_bonus=12.0,
-            coordinate_bonus=coord_bonus,
         )
 
-    def _alias_matches(self, raw_text: str, coordinate_context: _CoordinateContext) -> list[LocationMatch]:
+    def _alias_matches(self, raw_text: str) -> list[LocationMatch]:
         result: list[LocationMatch] = []
-        for prepared in self.prepared_aliases:
-            alias_record = prepared.record
+        for alias_record in self.aliases:
             similarity = text_similarity(alias_record.alias, raw_text)
             if similarity.score < 45.0:
                 continue
-            coord_bonus, _support = self._coordinate_bonus(alias_record.location, coordinate_context)
             priority_bonus = max(0.0, min(4.0, (alias_record.priority - 80) / 5.0))
             result.append(LocationMatch(
                 location=alias_record.location,
@@ -323,8 +296,24 @@ class LocationResolver:
                 exact=similarity.mode is TextMatchMode.EXACT,
                 mode=self._match_mode(similarity.mode),
                 context_bonus=priority_bonus,
-                coordinate_bonus=coord_bonus,
             ))
+        return result
+
+    def _text_matches(self, raw: str) -> tuple[LocationMatch, ...]:
+        """Reuse one immutable set of text matches; coordinates are applied later."""
+        if self._last_text_matches is not None and self._last_text_matches[0] == raw:
+            return self._last_text_matches[1]
+        spans = self._spans(raw)
+        matches = self._alias_matches(raw)
+        structured = self._structured_pair_match(raw)
+        if structured is not None:
+            matches.append(structured)
+        for prepared in self._candidate_locations(spans):
+            match = self._best_text_match(prepared, spans, raw)
+            if match is not None and match.score >= 35.0:
+                matches.append(match)
+        result = tuple(matches)
+        self._last_text_matches = raw, result
         return result
 
     def resolve(
@@ -336,18 +325,10 @@ class LocationResolver:
         timestamp: float | None = None,
     ) -> LocationEvidence:
         raw = clean_text(raw_text)
-        spans = self._spans(raw)
         coordinate_context = self._coordinate_context(coordinates)
-        matches: list[LocationMatch] = self._alias_matches(raw, coordinate_context)
-        structured_match = self._structured_pair_match(raw, coordinate_context)
-        if structured_match is not None:
-            matches.append(structured_match)
-
-        for prepared in self._candidate_locations(spans):
-            match = self._best_text_match(prepared, spans, raw)
-            if match is None or match.score < 35.0:
-                continue
-            coord_bonus, _support = self._coordinate_bonus(prepared.location, coordinate_context)
+        matches: list[LocationMatch] = []
+        for match in self._text_matches(raw):
+            coord_bonus, _support = self._coordinate_bonus(match.location, coordinate_context)
             if coord_bonus:
                 match = replace(match, coordinate_bonus=coord_bonus)
             matches.append(match)
@@ -377,7 +358,7 @@ class LocationResolver:
 
         return LocationEvidence(
             raw_zone_text=raw,
-            ocr_confidence=max(0.0, min(1.0, float(ocr_confidence))),
+            ocr_confidence=clamp_confidence(ocr_confidence),
             top1=top1,
             top2=top2,
             margin=float(margin),

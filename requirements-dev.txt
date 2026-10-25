@@ -1,0 +1,4 @@
+# Development tools; never included in the application bundle.
+pytest==9.1.1
+coverage==7.13.3
+ruff==0.17.2

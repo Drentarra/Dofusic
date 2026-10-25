@@ -6,36 +6,40 @@ DOFUSIC - CONSTRUCTION PORTABLE WINDOWS X64
 3. Il lance les tests, prépare l'OCR, construit Dofusic.exe et l'auto-teste.
 4. Le fichier à partager est :
 
-   Release\Dofusic_V25_1_ECO_WINDOWS_X64.zip
+   Release\Dofusic_*_LOCAL_WINDOWS_X64_AVEC_MUSIQUES.zip
 
 UTILISATEUR FINAL
 -----------------
-Extraire le ZIP dans un dossier inscriptible puis lancer Dofusic.exe.
+Extraire le ZIP dans un dossier puis lancer Dofusic.exe.
 Aucun Python système, pip, droit administrateur ou installateur Dofusic n'est requis.
 
 Le ZIP contient :
 - Dofusic.exe
 - Data\
-- Musiques\ (musiques incluses)
+- Un dossier Musiques/ contenant les fichiers .opus suivis dans le dépôt GitHub,
+  et aucun fichier de diagnostic. Le build refuse un dossier source sans OPUS.
 
-Vous pouvez ajouter ou remplacer les musiques dans le dossier Musiques.
+Les pistes sont directement lisibles depuis Dofusic/Musiques/.
+Vous pouvez ajouter ou remplacer des pistes après extraction, y compris dans des sous-dossiers.
+Si le dossier de l’application est protege en ecriture, les reglages sont conserves
+dans %LOCALAPPDATA%\Dofusic\ et le dossier portable n’est pas modifie.
 
 PROFIL PORTABLE
 ---------
-- Mode développeur et mot de passe supprimés.
-- Session YouTube supprimée.
-- pywebview / WebView2 / pythonnet supprimés du runtime.
-- Recherche online légère via yt-dlp.
-- Un seul modèle OCR zone PP-OCRv6 Small est embarqué pour le chemin live.
-- Profil ECO : capture 10 FPS, UI 12,5 Hz et OCR adaptatif.
-- Visualiseur FFT désactivé par défaut ; il reste réactivable dans Paramètres.
-- Cache online borné à 128 Mo par défaut.
+- Bibliothèque musicale exclusivement locale.
+- Reconnaissance OCR PP-OCRv6 Small par ONNX Runtime CPU.
+- Capture par défaut à 10 FPS, interface rafraîchie toutes les 80 ms et OCR adaptatif.
+- Visualiseur FFT et normalisation configurables dans Paramètres.
+- Aucune plateforme musicale ou compte extérieur requis.
 
-Le mode OCR/local fonctionne hors ligne. Une connexion Internet n'est utilisée que
-quand la fonction Musique online est utilisée.
+Le programme fonctionne hors ligne : Internet est seulement requis pour les dépendances
+et les modèles OCR au moment de la compilation, et pas pour lire les musiques locales.
 
 AUDIO / STOCKAGE
 ----------------
-- Online : cache et ajout Musiques en Opus 64 kb/s.
+- Musiques : lecture et file d'attente de fichiers locaux.
 - Local : formats audio courants acceptés via FFmpeg.
 - Format conseillé : Opus 64 kb/s.
+
+Aucun fichier de log ou de rapport de plantage n'est créé par Dofusic.
+Les préférences locales sont conservées dans un fichier de configuration.

@@ -10,8 +10,7 @@ from typing import Optional, Tuple
 import cv2
 import numpy as np
 
-from dofusic.vision.layout import HUDGeometry, HUDTransform, estimate_hud_transform
-
+from dofusic.vision.layout import HUDGeometry, HUDTransform, hud_transform_from_client_size
 
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -43,6 +42,25 @@ def _process_basename(pid: int) -> str:
     finally:
         close_handle(handle)
 
+
+def client_fills_monitor(
+    client_rect: tuple[int, int, int, int],
+    monitor_rect: tuple[int, int, int, int],
+    *, tolerance: int = 3,
+) -> bool:
+    """Accept exclusive or borderless fullscreen, never a maximized client area.
+
+    Rectangles are screen coordinates (left, top, right, bottom). Compare
+    against the physical monitor, not its work area (which excludes the taskbar).
+    """
+    left, top, right, bottom = client_rect
+    ml, mt, mr, mb = monitor_rect
+    return (
+        right > left and bottom > top and mr > ml and mb > mt
+        and all(abs(actual - expected) <= tolerance for actual, expected in zip(
+            (left, top, right, bottom), (ml, mt, mr, mb)
+        ))
+    )
 
 
 @dataclass(slots=True)
@@ -83,13 +101,14 @@ class DofusCapture:
             raise RuntimeError('DofusCapture nécessite Windows')
         enable_dpi_awareness()
         import mss
+        import win32api
         import win32con
         import win32gui
         import win32process
         import win32ui
 
-        self.mss_mod = mss
         self.win32con = win32con
+        self.win32api = win32api
         self.win32gui = win32gui
         self.win32process = win32process
         self.win32ui = win32ui
@@ -105,7 +124,9 @@ class DofusCapture:
         self.root_hwnd: Optional[int] = None
         self.last_window_refresh = 0.0
         self.last_printwindow = 0.0
-        self._hud_scale: float | None = None
+        self.window_mode = 'missing'
+        self._last_client_size: tuple[int, int] | None = None
+        self._resolution_transform: HUDTransform | None = None
 
     def _root_and_pid(self, hwnd: int) -> tuple[int, int] | None:
         try:
@@ -162,7 +183,8 @@ class DofusCapture:
         if identity is None:
             return False
         if self.hwnd != int(hwnd):
-            self._hud_scale = None
+            self._last_client_size = None
+            self._resolution_transform = None
         self.hwnd = int(hwnd)
         self.root_hwnd, self.pid = identity
         return True
@@ -171,12 +193,18 @@ class DofusCapture:
         self.hwnd = None
         self.pid = None
         self.root_hwnd = None
-        self._hud_scale = None
+        self._last_client_size = None
+        self._resolution_transform = None
 
     def _find_window(self) -> Optional[int]:
         now = time.monotonic()
-        if self._valid_hwnd(self.hwnd) and now - self.last_window_refresh < self.window_refresh_sec:
-            return self.hwnd
+        if now - self.last_window_refresh < self.window_refresh_sec:
+            if self.hwnd is None:
+                # No game yet: avoid EnumWindows and process queries on every
+                # 10 FPS idle capture tick. Still retry after the refresh delay.
+                return None
+            if self._valid_hwnd(self.hwnd):
+                return self.hwnd
 
         self.last_window_refresh = now
         found: list[tuple[int, int]] = []
@@ -203,11 +231,30 @@ class DofusCapture:
             return None
         return self.hwnd
 
+    def _resolution_hud(self, hwnd: int) -> HUDTransform | None:
+        """Single authoritative HUD geometry from Dofus' Win32 client size.
+
+        The game HUD scale comes from the offline-fitted resolution curve.
+        Its origin is client (0, 0). Nothing in a captured image (notifications, inventory,
+        map art) can modify this geometry. Cache until client size or game HWND
+        changes. The right edges of combat/zone are measured elsewhere.
+        """
+        size = self._client_size(hwnd)
+        if size != getattr(self, '_last_client_size', None) or not hasattr(self, '_resolution_transform'):
+            self._last_client_size = size
+            self._resolution_transform = hud_transform_from_client_size(*size, geometry=self.geometry)
+        return self._resolution_transform
+
     def _client_capture_rect(self, hwnd: int) -> tuple[int, int, int, int] | None:
-        width, height = self._client_size(hwnd)
-        if width <= 0 or height <= 0:
+        transform = self._resolution_hud(hwnd)
+        if transform is None:
             return None
-        x, y, roi_width, roi_height = self.geometry.capture_rect(width, height, ui_scale=self._hud_scale)
+        width, height = self._last_client_size
+        # The reference strip ends at 106px at 1x; the cached resolution
+        # curve determines the strip height, with no live HUD search.
+        x, y, roi_width, roi_height = self.geometry.capture_rect(
+            width, height, ui_scale=transform.scale,
+        )
         if x >= width or y >= height:
             return None
         roi_width = min(roi_width, width - x)
@@ -215,6 +262,24 @@ class DofusCapture:
         if roi_width <= 0 or roi_height <= 0:
             return None
         return x, y, roi_width, roi_height
+
+    def _display_mode(self, hwnd: int) -> str:
+        """Inspect the actual Dofus *client* against its own monitor.
+
+        Maximized windows still have borders/title bar and therefore fail.
+        Any Win32 failure is unknown, never mistaken for fullscreen.
+        """
+        try:
+            width, height = self._client_size(hwnd)
+            left, top = self.win32gui.ClientToScreen(hwnd, (0, 0))
+            monitor = self.win32api.MonitorFromWindow(
+                hwnd, self.win32con.MONITOR_DEFAULTTONEAREST,
+            )
+            monitor_rect = tuple(self.win32api.GetMonitorInfo(monitor)['Monitor'])
+            rect = (int(left), int(top), int(left + width), int(top + height))
+            return 'fullscreen' if client_fills_monitor(rect, monitor_rect) else 'windowed'
+        except Exception:
+            return 'unknown'
 
     def _roi_screen_rect(self, hwnd: int) -> Optional[dict]:
         rect = self._client_capture_rect(hwnd)
@@ -224,31 +289,73 @@ class DofusCapture:
         left, top = self.win32gui.ClientToScreen(hwnd, (x, y))
         return {'left': int(left), 'top': int(top), 'width': int(width), 'height': int(height)}
 
+    @staticmethod
+    def _is_own_excluded_overlay(root_hwnd: int, owner_pid: int) -> bool:
+        """Treat only our capture-excluded Tk overlay as visually transparent.
+
+        WindowFromPoint may return a layer above Dofus even though MSS omits
+        that layer. Other processes' windows are never exempted.
+        """
+        if os.name != 'nt' or owner_pid != os.getpid() or not root_hwnd:
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            get_affinity = user32.GetWindowDisplayAffinity
+            get_affinity.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint32)]
+            get_affinity.restype = ctypes.c_int
+            affinity = ctypes.c_uint32(0)
+            return bool(get_affinity(int(root_hwnd), ctypes.byref(affinity))) and affinity.value == 0x11
+        except Exception:
+            return False
+
     def _roi_visible(self, hwnd: int) -> bool:
+        # Passive click-through overlays can be reported by WindowFromPoint
+        # instead of the underlying Dofus client. A verified foreground Dofus
+        # process is independent, positive visibility evidence; avoid falling
+        # into PrintWindow-only capture because of our own tracking outlines.
+        try:
+            foreground = int(self.win32gui.GetForegroundWindow() or 0)
+            identity = self._root_and_pid(foreground) if foreground else None
+            if identity is not None and identity == (self.root_hwnd, self.pid):
+                return True
+        except Exception:
+            pass
         rect = self._client_capture_rect(hwnd)
         if rect is None or self.pid is None:
             return False
         x, y, width, height = rect
-        points = (
-            (x + 6, y + 6),
-            (x + max(6, width // 2), y + 6),
-            (x + max(6, width - 6), y + 6),
-            (x + 6, y + max(6, height - 6)),
-            (x + max(6, width - 6), y + max(6, height - 6)),
-        )
+        # Only the top-left HUD is captured and interpreted. Sampling the
+        # *middle and far right of the entire client* falsely declares a
+        # window invisible when it is moved partly beyond a monitor edge,
+        # despite all combat/zone controls remaining onscreen. Check the HUD
+        # itself, spreading samples across toolbar, zone and coordinates.
+        offsets = ((6, 6), (18, 26), (85, 56), (45, 86), (190, 18))
+        points = tuple((x + min(width - 1, px), y + min(height - 1, py))
+                       for px, py in offsets)
         try:
             visible = 0
             for point in points:
                 screen_point = self.win32gui.ClientToScreen(hwnd, point)
                 visible_hwnd = self.win32gui.WindowFromPoint(screen_point)
                 identity = self._root_and_pid(visible_hwnd)
-                if identity is not None and identity[1] == self.pid:
+                if identity is not None and (
+                    identity[1] == self.pid
+                    or self._is_own_excluded_overlay(identity[0], identity[1])
+                ):
                     visible += 1
             return visible >= 3
         except Exception:
             return False
 
-    def _capture_visible_roi(self, hwnd: int) -> Optional[np.ndarray]:
+    def _capture_visible_roi(
+        self, hwnd: int,
+    ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+        """Return the pixels WITH their actual capture-time screen rectangle.
+
+        A dragged window may move between MSS.grab and the controller tick;
+        asking ClientToScreen a second time would project the old pixels onto
+        the *new* location and make the outlines jump independently of OCR.
+        """
         if not self._roi_visible(hwnd):
             return None
         rect = self._roi_screen_rect(hwnd)
@@ -257,7 +364,9 @@ class DofusCapture:
         try:
             shot = self.sct.grab(rect)
             image = cv2.cvtColor(np.asarray(shot), cv2.COLOR_BGRA2BGR)
-            return image if image.size else None
+            if image.size == 0:
+                return None
+            return image, (rect['left'], rect['top'], rect['width'], rect['height'])
         except Exception:
             return None
 
@@ -308,22 +417,34 @@ class DofusCapture:
     def capture(self) -> CapturedFrame | None:
         hwnd = self._find_window()
         if not hwnd:
+            self.window_mode = 'missing'
             return None
 
-        image = self._capture_visible_roi(hwnd)
+        self.window_mode = self._display_mode(hwnd)
+        if self.window_mode != 'fullscreen':
+            # Do not grab pixels, calibrate HUD or submit OCR while windowed.
+            return None
+
+        visible_frame = self._capture_visible_roi(hwnd)
         source = 'visible'
-        if image is None:
+        if visible_frame is None:
             now = time.monotonic()
             if now - self.last_printwindow < self.printwindow_cooldown_sec:
                 return None
             self.last_printwindow = now
             image = self._capture_printwindow_roi(hwnd)
             source = 'printwindow'
+            # PrintWindow is never projected onto the live screen as an overlay.
+            screen_rect = None
+        else:
+            image, screen_rect = visible_frame
         if image is None:
             return None
-        rect = self._roi_screen_rect(hwnd)
-        screen_rect = None if rect is None else (rect['left'], rect['top'], rect['width'], rect['height'])
-        transform = estimate_hud_transform(image, self.geometry)
+        # Deterministic resolution-only transform. No image/pixel-based
+        # calibration, no temporal smoother, no Discord-induced false scales.
+        transform = self._resolution_hud(hwnd)
+        if transform is None:
+            return None
         frame = CapturedFrame(
             image=image,
             source=source,
@@ -331,11 +452,6 @@ class DofusCapture:
             screen_rect=screen_rect,
             hud_transform=transform,
         )
-        # Calibration belongs to the captured frame and is reused by the app.
-        # Only the *next* capture adopts the new height, so screen_rect and image
-        # can never describe different coordinate systems.
-        if transform is not None:
-            self._hud_scale = float(transform.scale)
         return frame
 
     def close(self) -> None:

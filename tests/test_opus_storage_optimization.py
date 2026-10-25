@@ -1,69 +1,13 @@
 from __future__ import annotations
 
-import subprocess
-import sys
 import types
 from pathlib import Path
 
 from dofusic.audio.library import AUDIO_EXTS
 from dofusic.audio.player import MusicPlayer
-from dofusic.online.media_cache import MediaCache
-from dofusic.online.models import OnlineTrack
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'Data'
-
-
-def test_online_cache_normalizes_download_to_opus_and_library_keeps_opus(tmp_path):
-    calls = []
-
-    def downloader(track, cache_dir):
-        raw = Path(cache_dir) / f'{track.video_id}.webm'
-        raw.write_bytes(b'raw')
-        calls.append(('download', raw))
-        return raw
-
-    def transcoder(source, target):
-        calls.append(('transcode', Path(source), Path(target)))
-        Path(target).write_bytes(b'opus64')
-        return target
-
-    cache = MediaCache(tmp_path / 'cache', tmp_path / 'music', downloader=downloader, transcoder=transcoder)
-    track = OnlineTrack('abcdefghijk', 'Titre')
-
-    cached = cache.ensure_cached(track)
-    saved = cache.save_to_library(track, 'Mon titre')
-
-    assert cached == tmp_path / 'cache' / 'abcdefghijk.opus'
-    assert saved == tmp_path / 'music' / 'Mon titre.opus'
-    assert saved.read_bytes() == b'opus64'
-    assert calls == [
-        ('download', tmp_path / 'cache' / 'abcdefghijk.webm'),
-        ('transcode', tmp_path / 'cache' / 'abcdefghijk.webm', tmp_path / 'cache' / 'abcdefghijk.opus'),
-    ]
-
-
-def test_ffmpeg_opus_transcode_is_explicitly_64_kbps(monkeypatch, tmp_path):
-    source = tmp_path / 'source.webm'
-    target = tmp_path / 'target.opus'
-    source.write_bytes(b'raw')
-    captured = {}
-
-    monkeypatch.setitem(sys.modules, 'imageio_ffmpeg', types.SimpleNamespace(get_ffmpeg_exe=lambda: 'ffmpeg.exe'))
-
-    def fake_run(command, **kwargs):
-        captured['command'] = list(command)
-        Path(command[-1]).write_bytes(b'opus')
-        return types.SimpleNamespace(returncode=0, stderr='')
-
-    monkeypatch.setattr(subprocess, 'run', fake_run)
-    cache = MediaCache(tmp_path / 'cache', tmp_path / 'music')
-    produced = cache._transcode_to_opus(source, target)
-
-    assert produced == target
-    command = captured['command']
-    assert '-c:a' in command and command[command.index('-c:a') + 1] == 'libopus'
-    assert '-b:a' in command and command[command.index('-b:a') + 1] == '64k'
 
 
 def test_local_library_accepts_common_ffmpeg_audio_formats():
@@ -102,17 +46,13 @@ def test_player_uses_ffmpeg_fallback_when_pygame_cannot_decode_source(tmp_path):
     player._transcode_playback_fallback = lambda _path: fallback
 
     assert player.play(source, loop=False)
+    assert player.is_preparing(source)
+    player._decode_thread.join(timeout=2)
+    player.tick()
     assert loaded == [source, fallback]
     assert player.current == source
-
-
-def test_spec_bundles_quickjs_binary_only_once_and_builder_guards_large_duplicates():
-    spec = (DATA / 'Dofusic.spec').read_text(encoding='utf-8')
-    builder = (DATA / 'tools' / 'build_portable.py').read_text(encoding='utf-8')
-
-    assert "collect_data_files('deno')" not in spec
-    assert "(str(QUICKJS_BINARY), 'js')" in spec
-    assert '_check_large_duplicate_files' in builder
+    player._ready = False
+    player.close()
 
 
 def test_frozen_runtime_does_not_bundle_deno_python_package():
@@ -120,13 +60,5 @@ def test_frozen_runtime_does_not_bundle_deno_python_package():
     main = (DATA / 'main.py').read_text(encoding='utf-8')
     assert "'deno', 'yt_dlp_ejs'" not in spec
     assert "'deno', 'imageio_ffmpeg'" not in main
-    assert 'resolve_quickjs_executable' in main
-
-
-def test_quickjs_source_fallback_has_no_python_runtime_package_dependency():
-    retrieval = (DATA / 'dofusic' / 'online' / 'retrieval.py').read_text(encoding='utf-8')
-    assert 'import deno' not in retrieval
-    assert "importlib.import_module('deno')" not in retrieval
-    assert "shutil.which('qjs')" in retrieval
-
-
+    assert 'resolve_quickjs_executable' not in main
+    assert "'imageio_ffmpeg'" in main

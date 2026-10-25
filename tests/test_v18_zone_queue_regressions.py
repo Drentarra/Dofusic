@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
-
 
 def _stroke(image, x1, x2, y1, y2):
     image[y1:y2, x1:x2] = 255
@@ -45,17 +43,19 @@ def test_normal_area_resolution_never_depends_on_removed_legacy_dungeon_helper(t
 def test_queue_remove_button_stays_inside_narrow_row_with_long_title():
     """The remove control must keep a reserved right-hand column."""
     import tkinter as tk
+
     import pytest
 
-    from dofusic.online.models import PlaylistItem
+    from dofusic.audio.session import LocalTrack
     from dofusic.ui.music_window import MusicWindow
     from dofusic.ui.themes import get_theme
 
     class Session:
         current = None
         repeat_current = False
+        status = ''
         pending = (
-            PlaylistItem(source='local', title='Titre extrêmement long qui ne doit jamais pousser le bouton de suppression hors de la file', local_path=Path('x.mp3')),
+            LocalTrack(Path('Titre extrêmement long qui ne doit jamais pousser le bouton de suppression hors de la file.mp3')),
         )
         def remove_pending(self, _index):
             return None
@@ -71,6 +71,9 @@ def test_queue_remove_button_stays_inside_narrow_row_with_long_title():
         window.p = get_theme('emerald')
         window.current_var = tk.StringVar(master=root)
         window.repeat_button = tk.Button(root)
+        window.status_var = tk.StringVar(master=root)
+        window._last_playback_signature = None
+        window._queue_rows_configured = lambda *_args: None
         window._last_queue_signature = None
         window.queue_canvas = tk.Canvas(root, width=150, height=100, highlightthickness=0)
         window.queue_canvas.pack()

@@ -12,19 +12,13 @@ from PyInstaller.utils.hooks import collect_data_files
 
 DATA_ROOT = Path(SPECPATH).resolve()
 
-QUICKJS_BINARY = (DATA_ROOT.parent / '.portable-build' / 'runtime' / 'qjs.exe').resolve()
-if not QUICKJS_BINARY.is_file():
-    raise FileNotFoundError(f'Executable QuickJS introuvable pendant le build: {QUICKJS_BINARY}')
-
-binaries = [(str(QUICKJS_BINARY), 'js')]
+binaries = []
 datas = [
     (str(DATA_ROOT / 'dofus_data.sqlite'), '.'),
     (str(DATA_ROOT / 'place_aliases.json'), '.'),
     (str(DATA_ROOT / 'dungeons.json'), '.'),
     (str(DATA_ROOT / 'Models'), 'Models'),
     (str(DATA_ROOT / 'dofusic' / 'ui' / 'assets'), 'dofusic/ui/assets'),
-    (str(DATA_ROOT / 'README.md'), '.'),
-    (str(DATA_ROOT / 'PRIVACY.md'), '.'),
     (str(DATA_ROOT / 'THIRD_PARTY_NOTICES.md'), '.'),
 ]
 
@@ -43,22 +37,15 @@ rapidocr_data = collect_data_files('rapidocr',
 )
 datas += rapidocr_data
 
-# YouTube 2026: yt-dlp requires local EJS scripts plus a JavaScript runtime.
-# QuickJS-NG is bundled as one tiny qjs.exe via `binaries` above.
-# yt_dlp_ejs still needs its JavaScript package data.
-datas += collect_data_files('yt_dlp_ejs')
-
-
 hiddenimports = [
-    'win32con', 'win32gui', 'win32process', 'win32ui', 'pywintypes',
+    'win32api', 'win32con', 'win32gui', 'win32process', 'win32ui', 'pywintypes',
     'multiprocessing.popen_spawn_win32',
-    'yt_dlp_ejs',
 ]
 
 # Backends et frameworks non utilises. Dofusic reste exclusivement ONNX Runtime
 # CPU. Les exclusions ne changent ni le modele OCR, ni les crops, ni les threads.
 excludes = [
-    'psutil',
+    'psutil', 'yt_dlp', 'yt_dlp_ejs', 'quickjs',
     'deno',
     'numpy.testing', 'numpy.f2py',
     'PIL.ImageQt',
@@ -104,7 +91,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    disable_windowed_traceback=False,
+    disable_windowed_traceback=True,
     icon=str(DATA_ROOT / 'dofusic' / 'ui' / 'assets' / 'dofusic.ico'),
     contents_directory='Data',
 )

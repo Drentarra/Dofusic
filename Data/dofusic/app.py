@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,10 +8,12 @@ from typing import Callable
 
 import numpy as np
 
-from dofusic.audio.library import MusicLibrary
 from dofusic.audio.dungeons import DungeonCatalog
+from dofusic.audio.library import MusicLibrary
 from dofusic.audio.player import MusicPlayer
+from dofusic.audio_policy import ControllerAudioPolicyMixin
 from dofusic.capture.dofus_window import DofusCapture
+from dofusic.capture.pointer import screen_cursor_position
 from dofusic.capture.process_presence import is_process_running
 from dofusic.capture.service import CaptureService, DirectCaptureService
 from dofusic.config import AppConfig, app_dir, database_path, default_music_dir
@@ -19,14 +21,31 @@ from dofusic.location.coordinates import contextual_coordinates
 from dofusic.location.decision import DecisionEngine
 from dofusic.location.repository import DofusRepository
 from dofusic.location.resolver import LocationResolver
-from dofusic.models import Coordinates, DecisionState, LocationEvidence, LocationRecord, PositionOCRResult, ZoneOCRResult
+from dofusic.models import (
+    Coordinates,
+    DecisionResult,
+    DecisionState,
+    LocationEvidence,
+    LocationRecord,
+    PositionOCRResult,
+    ZoneOCRResult,
+)
+from dofusic.ocr_dispatch import OCREventDispatchMixin
 from dofusic.text import clean_text
-from dofusic.vision.combat import CombatStateTracker, analyze_combat_toolbar
-from dofusic.vision.layout import HUDGeometry, extract_hud_inputs, tracking_screen_rects, zone_crop_has_text
-from dofusic.vision.position_overlay import coordinate_overlay_width
-from dofusic.vision.workers import OCREventKind, OCRWorkerClient
-from dofusic.vision.scheduler import OCRChannelScheduler
 from dofusic.vision.change_gate import OCRChangeGate
+from dofusic.vision.combat import CombatObservation, CombatStateTracker, analyze_combat_toolbar
+from dofusic.vision.interaction_guard import ToolbarInteractionGuard
+from dofusic.vision.layout import (
+    HUDGeometry,
+    HUDInputs,
+    ZoneCropStabilizer,
+    ZoneOverlayWidthTracker,
+    extract_hud_inputs,
+)
+from dofusic.vision.runtime import OCRRuntimeSupervisor
+from dofusic.vision.scheduler import OCRChannelScheduler
+from dofusic.vision.workers import OCRWorkerClient
+from dofusic.vision.zone_stability import ZoneTextContinuity
 
 
 @dataclass(slots=True)
@@ -56,21 +75,21 @@ class ControllerState:
     zone_worker_status: str = 'Arrêté'
     position_worker_status: str = 'Arrêté'
     decision_state: str = ''
-    debug_text: str = ''
     window_found: bool = False
+    game_detected: bool = False
+    fullscreen_required: bool = False
     overlay_hwnd: int | None = None
     combat_overlay_rect: tuple[int, int, int, int] | None = None
     zone_overlay_rect: tuple[int, int, int, int] | None = None
     position_overlay_rect: tuple[int, int, int, int] | None = None
     zone_elapsed_ms: float = 0.0
     position_elapsed_ms: float = 0.0
-    audio_levels: tuple[float, ...] = ()
     in_combat: bool = False
     combat_confidence: float = 0.0
     automatic_detection_unlocked: bool = False
 
 
-class DofusicController:
+class DofusicController(ControllerAudioPolicyMixin, OCREventDispatchMixin):
     """Production controller: two independent OCR channels, one-way audio decision."""
 
     def __init__(
@@ -84,11 +103,9 @@ class DofusicController:
         position_worker=None,
         capture=None,
         decision_engine: DecisionEngine | None = None,
-        logger: logging.Logger | None = None,
         process_probe: Callable[[str], bool] | None = None,
     ) -> None:
         self.config = config.sanitized()
-        self.logger = logger or logging.getLogger('dofusic')
         self.repository = repository or DofusRepository(database_path())
         self.resolver = LocationResolver(self.repository)
 
@@ -111,6 +128,13 @@ class DofusicController:
 
         self.zone_worker = zone_worker or OCRWorkerClient(channel='zone', cpu_threads=self.config.cpu_threads)
         self.position_worker = position_worker or OCRWorkerClient(channel='position', cpu_threads=1)
+        # Only production/native OCR processes need this asynchronous supervisor.
+        # Injected test backends retain deterministic synchronous semantics.
+        self._ocr_supervisor = (
+            OCRRuntimeSupervisor({'zone': self.zone_worker, 'position': self.position_worker})
+            if capture is None and isinstance(self.zone_worker, OCRWorkerClient)
+            and isinstance(self.position_worker, OCRWorkerClient) else None
+        )
         self.hud_geometry = HUDGeometry()
         # Production capture is created and executed inside its own thread. Tests
         # may inject a deterministic backend, which is wrapped synchronously.
@@ -138,8 +162,16 @@ class DofusicController:
             self._process_probe = lambda _name: True
         self._process_probe_interval_sec = 0.75
         self._last_process_probe_at = float('-inf')
+        # A lightweight window watcher runs even before Dofus.exe exists.
+        # It also provides a second presence signal when Toolhelp32 misses a
+        # late-created game process (e.g. after a launcher handoff).
+        self._capture_watch_enabled = capture is None
         self._game_process_running = False
         self._automatic_runtime_active = False
+        # A positive windowed observation must be continuous. Unknown frames
+        # must never count toward the windowed grace period.
+        self._positive_windowed_since: float | None = None
+        self._process_unavailable_since: float | None = None
         self._last_capture_sequence = 0
         self.decision = decision_engine or DecisionEngine(
             min_confidence=self.config.min_confidence,
@@ -154,20 +186,21 @@ class DofusicController:
         self.started = False
         self.next_confirmation_at = 0.0
         self.last_capture_seen_at = 0.0
-        self._last_capture_error = ''
-        self._last_capture_error_log_at = 0.0
         self.unknown_since: float | None = None
         self.current_location: LocationRecord | None = None
+        # Audio resolution must never reuse the raw, potentially masked OCR
+        # sample displayed during a combat. Keep its last confirmed label.
+        self._confirmed_zone_raw_text = ''
         self.last_evidence: LocationEvidence | None = None
         self.last_position_at = 0.0
+        self.last_zone_observed_at = float('-inf')
         self.last_reliable_position: Coordinates | None = None
         self.context_position: Coordinates | None = None
         self._accepted_position_result: PositionOCRResult | None = None
-        self._zone_overlay_width_px: int | None = None
-        self._zone_overlay_refresh_requested = False
-        self._zone_overlay_text_key = ''
-        self._zone_overlay_candidate_width: int | None = None
-        self._zone_overlay_candidate_count = 0
+        self._zone_crop_stabilizer = ZoneCropStabilizer()
+        self._zone_overlay_width = ZoneOverlayWidthTracker()
+        self._pending_zone_width: tuple[object, int, int, float] | None = None
+        self._zone_text_continuity = ZoneTextContinuity()
         # Per-Dofus-process startup latch: only position OCR is allowed until valid
         # map coordinates have been read once. Closing Dofus re-arms this guard so a
         # later relaunch cannot interpret the login/character menus as a game map.
@@ -182,24 +215,31 @@ class DofusicController:
             change_threshold=self.config.ocr_change_threshold,
             idle_refresh_sec=self.config.position_ocr_idle_refresh_sec,
         )
-        self.combat_tracker = CombatStateTracker(required_confirmations=3, initial_state=False)
-        self._combat_suspended_for_dungeon = False
-        # Online music is a temporary audio override only. OCR/location continue
-        # normally and keep this desired local track up to date underneath it.
+        self.combat_tracker = CombatStateTracker(
+            required_confirmations=3, initial_state=False,
+            min_inferred_transition_seconds=0.40,
+        )
+        self._toolbar_interaction_guard = ToolbarInteractionGuard()
+        # A completed combat invalidates zone OCR frames captured during the fight.
+        self._zone_min_observed_at = float('-inf')
+        # Manual local playback temporarily overrides automatic location music.
+        # OCR and dungeon decisions continue updating the desired track.
         self._audio_override_active = False
-        self._audio_override_source: str | None = None
         # Backward-compatible mirror used by a few internal tests/consumers.
         self._desired_local_track: Path | None = None
+        self._last_audio_retry_at = float('-inf')
 
-    def _audio_status(self, message: str) -> None:
-        self.state.status = message
-        self.logger.warning(message)
 
     def start(self) -> None:
         if self.started:
             return
         self.started = True
         self.state.status = 'En attente de Dofus.exe'
+        if getattr(self, '_capture_watch_enabled', False):
+            try:
+                self.capture_service.start()
+            except Exception:
+                pass
         self.state.zone_worker_status = 'Arrêté'
         self.state.position_worker_status = 'Arrêté'
         self._refresh_worker_status()
@@ -217,7 +257,8 @@ class DofusicController:
         try:
             self.capture_service.start()
         except Exception:
-            self.logger.exception('Démarrage capture impossible')
+            pass
+        supervisor = getattr(self, '_ocr_supervisor', None)
         for channel, worker, slot in (
             ('zone', self.zone_worker, self.zone_slot),
             ('position', self.position_worker, self.position_slot),
@@ -225,20 +266,20 @@ class DofusicController:
             slot.fatal = False
             slot.ready = False
             slot.scheduler.reset(request_refresh=True)
-            try:
-                worker.start()
-                if channel == 'zone':
-                    self.state.zone_worker_status = 'Démarrage OCR zone'
-                else:
-                    self.state.position_worker_status = 'Démarrage OCR position'
-            except Exception as exc:
-                slot.fatal = True
-                self.logger.exception('Démarrage worker %s impossible', channel)
-                if channel == 'zone':
-                    self.state.zone_worker_status = 'Erreur OCR zone'
-                    self.state.status = f'Impossible de démarrer OCR zone: {exc}'
-                else:
-                    self.state.position_worker_status = 'Erreur OCR position'
+            slot.last_restart_at = time.monotonic()
+            if supervisor is None:
+                try:
+                    worker.start()
+                except Exception as exc:
+                    slot.fatal = True
+                    self.state.status = f'Impossible de démarrer OCR {channel}: {exc}'
+            if channel == 'zone':
+                self.state.zone_worker_status = 'Erreur OCR zone' if slot.fatal else 'Démarrage OCR zone'
+            else:
+                self.state.position_worker_status = 'Erreur OCR position' if slot.fatal else 'Démarrage OCR position'
+        if supervisor is not None:
+            self.state.status = 'Dofus détecté - initialisation OCR'
+            supervisor.start()  # never calls multiprocessing.Process.start() on Tk
         self._refresh_worker_status()
         # While the coordinate latch is still locked, only the neutral
         # Musique/Musique1/... pool may play automatically.
@@ -250,16 +291,17 @@ class DofusicController:
         self.next_confirmation_at = 0.0
         self.unknown_since = None
         self.current_location = None
+        self._confirmed_zone_raw_text = ''
         self.last_evidence = None
         self.last_position_at = 0.0
+        self.last_zone_observed_at = float('-inf')
         self.last_reliable_position = None
         self.context_position = None
         self._accepted_position_result = None
-        self._zone_overlay_width_px = None
-        self._zone_overlay_refresh_requested = False
-        self._zone_overlay_text_key = ''
-        self._zone_overlay_candidate_width: int | None = None
-        self._zone_overlay_candidate_count = 0
+        self._zone_crop_stabilizer.reset()
+        self._zone_overlay_width.reset()
+        self._pending_zone_width = None
+        self._zone_text_continuity.reset()
         self.state.location = 'En attente'
         self.state.location_key = ''
         self.state.place = '—'
@@ -280,13 +322,20 @@ class DofusicController:
         except Exception:
             pass
         self.combat_tracker.reset()
-        self._combat_suspended_for_dungeon = False
+        self._toolbar_interaction_guard.reset()
+        self._zone_min_observed_at = float('-inf')
 
     def _stop_automatic_runtime(self) -> None:
         was_active = bool(getattr(self, '_automatic_runtime_active', False))
         self._automatic_runtime_active = False
         if was_active:
-            for component in (self.zone_worker, self.position_worker, self.capture_service):
+            supervisor = getattr(self, '_ocr_supervisor', None)
+            if supervisor is not None:
+                supervisor.stop()
+            components = [] if supervisor is not None else [self.zone_worker, self.position_worker]
+            if not getattr(self, '_capture_watch_enabled', False):
+                components.append(self.capture_service)
+            for component in components:
                 try:
                     component.close()
                 except Exception:
@@ -299,6 +348,7 @@ class DofusicController:
         self.state.position_worker_status = 'Arrêté'
         self.state.worker_status = 'Arrêté'
         self.state.window_found = False
+        self.state.game_detected = False
         self.state.overlay_hwnd = None
         self.state.combat_overlay_rect = None
         self.state.zone_overlay_rect = None
@@ -315,35 +365,160 @@ class DofusicController:
             self.state.display_theme = 'En attente'
             self.state.status = 'Dofus.exe fermé - automatisme en pause'
 
+    def _visible_game_frame(self, now: float) -> bool:
+        """Accept a *fresh* captured Dofus window as an alternative to Toolhelp32.
+
+        Do not reuse cached frames after the process exits. The capture backend
+        validates the owning executable before producing a CapturedFrame.
+        """
+        if not getattr(self, '_capture_watch_enabled', False):
+            return False
+        try:
+            snapshot = self.capture_service.latest(0, now=now)
+            return bool(
+                snapshot is not None and snapshot.frame is not None
+                and snapshot.frame.hwnd
+                and 0.0 <= now - snapshot.captured_at <= 1.5
+            )
+        except Exception:
+            return False
+
+    def _hide_capture_overlay(self) -> None:
+        """Hide geometry immediately while keeping confirmed OCR/audio context."""
+        self.state.window_found = False
+        self.state.overlay_hwnd = None
+        self.state.combat_overlay_rect = None
+        self.state.zone_overlay_rect = None
+        self.state.position_overlay_rect = None
+
+    def _capture_unavailable(self, now: float, *, mode: str) -> bool:
+        """Debounce missing/uncertain fullscreen readings before resetting OCR.
+
+        Win32 and MSS can report an unknown mode for a single captured frame.
+        That is not evidence that the game left fullscreen. A sustained,
+        *positive* windowed reading has a shorter grace period than errors.
+        """
+        self._hide_capture_overlay()
+        self.state.fullscreen_required = mode == 'windowed'
+        if mode == 'windowed':
+            self.state.status = 'Passez Dofus en plein écran pour activer la détection'
+        else:
+            self.state.status = 'Capture Dofus temporairement indisponible'
+
+        # An unknown mode is not a positive windowed observation. Keep the
+        # OCR session, confirmed coordinates and currently playing track while
+        # the capture thread repairs its backend; otherwise a long Win32
+        # failure clears the startup latch and switches to generic music until
+        # the user manually toggles fullscreen.
+        # Only truly consecutive 'windowed' samples may stop the
+        # OCR runtime. Without this separate timer, 10 seconds of 'unknown'
+        # followed by one spurious 'windowed' probe immediately resets the
+        # confirmed location, music and OCR latch.
+        windowed_since = getattr(self, '_positive_windowed_since', None)
+        if mode == 'windowed':
+            if windowed_since is None:
+                windowed_since = now
+                self._positive_windowed_since = now
+            windowed_elapsed = max(0.0, now - windowed_since)
+        else:
+            self._positive_windowed_since = None
+            windowed_elapsed = 0.0
+        if (mode == 'windowed'
+                and bool(getattr(self, '_automatic_runtime_active', False))
+                and windowed_elapsed >= 0.65):
+            self._stop_automatic_runtime()
+        # stop() clears these fields for a truly closed game. The process is
+        # present here, merely out of fullscreen or temporarily unreadable.
+        self.state.game_detected = True
+        self.state.fullscreen_required = mode == 'windowed'
+        self.state.status = (
+            'Passez Dofus en plein écran pour activer la détection'
+            if mode == 'windowed' else 'Capture Dofus temporairement indisponible'
+        )
+        return False
+
     def _sync_game_process(self, now: float) -> bool:
         probe = getattr(self, '_process_probe', None)
         if not callable(probe):
             return True
         interval = max(0.05, float(getattr(self, '_process_probe_interval_sec', 0.75)))
         last_probe = float(getattr(self, '_last_process_probe_at', float('-inf')))
-        if now - last_probe < interval:
-            return self.game_process_running
-        self._last_process_probe_at = float(now)
-        try:
-            running = bool(probe(self.config.process_name))
-        except Exception:
-            running = False
-            self.logger.exception('Vérification du processus Dofus impossible')
+        # Window capture continues at low cost while the process is absent.
+        # A verified live game frame can unlock startup independently of the
+        # process snapshot, including when the launcher creates Dofus later.
+        visible = self._visible_game_frame(now)
+        probe_executed = now - last_probe >= interval
+        if not probe_executed:
+            running = bool(getattr(self, '_last_process_result', False)) or visible
+        else:
+            self._last_process_probe_at = float(now)
+            try:
+                self._last_process_result = bool(probe(self.config.process_name))
+            except Exception:
+                self._last_process_result = False
+            running = self._last_process_result or visible
+        # ``queried`` denotes an actual Toolhelp32 enumeration on THIS tick;
+        # ``process_present`` is the cached result. Keeping both makes it
+        # possible to diagnose brief Alt+Tab / process-snapshot misses.
         previous = self.game_process_running
-        self._game_process_running = running
-        if running and (not previous or not bool(getattr(self, '_automatic_runtime_active', False))):
+        if (getattr(self, '_capture_watch_enabled', False)
+                and isinstance(self.capture_service, CaptureService)
+                and not self.capture_service.alive):
+            # The capture watcher is required to detect returning fullscreen.
+            # Restore it even if its thread exited unexpectedly.
+            self.capture_service.start()
+        # The process snapshot and the window watcher are independent. Either
+        # can briefly be unavailable under Win32. Avoid resetting the startup
+        # position latch and replacing a confirmed track on one missed check.
+        if not running:
+            if bool(getattr(self, '_automatic_runtime_active', False)):
+                first = getattr(self, '_process_unavailable_since', None)
+                if first is None:
+                    first = now
+                    self._process_unavailable_since = first
+                self._hide_capture_overlay()
+                if now - first < 2.5:
+                    self.state.status = 'Vérification temporaire du processus Dofus'
+                    return False
+            if previous or bool(getattr(self, '_automatic_runtime_active', False)):
+                self._stop_automatic_runtime()
+            self._game_process_running = False
+            self.state.game_detected = False
+            self._positive_windowed_since = None
+            return False
+
+        self._process_unavailable_since = None
+        self._game_process_running = True
+        self.state.game_detected = True
+        # A process existing is not proof of fullscreen. A fresh *positive*
+        # fullscreen window snapshot is required before starting recognition.
+        if (getattr(self, '_capture_watch_enabled', False)
+                and isinstance(self.capture_service, CaptureService)):
+            snapshot = self.capture_service.latest(0, now=now)
+            mode = 'unknown'
+            if (snapshot is not None
+                    and 0.0 <= now - snapshot.captured_at <= 1.5):
+                mode = snapshot.window_mode
+            if mode != 'fullscreen':
+                return self._capture_unavailable(now, mode=mode)
+
+        self._positive_windowed_since = None
+        self.state.fullscreen_required = False
+        if not previous or not bool(getattr(self, '_automatic_runtime_active', False)):
             self._start_automatic_runtime()
-        elif not running and (previous or bool(getattr(self, '_automatic_runtime_active', False))):
-            self._stop_automatic_runtime()
-        return running
+        return True
 
     def restart_worker(self) -> None:
+        if bool(getattr(self.state, 'fullscreen_required', False)):
+            self.state.status = 'Passez Dofus en plein écran pour activer la détection'
+            return
         if not self.game_process_running:
             self.state.status = 'En attente de Dofus.exe'
             return
         now = time.monotonic()
         self.zone_change_gate.reset()
         self.position_change_gate.reset()
+        supervisor = getattr(self, '_ocr_supervisor', None)
         for channel, worker, slot in (
             ('zone', self.zone_worker, self.zone_slot),
             ('position', self.position_worker, self.position_slot),
@@ -353,57 +528,18 @@ class DofusicController:
             slot.scheduler.reset(request_refresh=True)
             slot.last_restart_at = now
             try:
-                worker.restart()
+                if supervisor is not None:
+                    supervisor.restart(channel)
+                else:
+                    worker.restart()
             except Exception:
                 slot.fatal = True
-                self.logger.exception('Redémarrage worker %s impossible', channel)
         self._refresh_worker_status()
 
-    def _refresh_worker_status(self) -> None:
-        if self.zone_slot.fatal and self.position_slot.fatal:
-            self.state.worker_status = 'Erreur OCR zone + position'
-        elif self.zone_slot.fatal:
-            self.state.worker_status = 'Erreur OCR zone'
-        elif self.position_slot.fatal:
-            self.state.worker_status = 'Erreur OCR position'
-        elif self.zone_slot.ready and self.position_slot.ready:
-            self.state.worker_status = 'OCR prêt'
-        elif self.zone_slot.ready:
-            self.state.worker_status = 'Zone prête / position en cours'
-        elif self.position_slot.ready:
-            self.state.worker_status = 'Position prête / zone en cours'
-        else:
-            self.state.worker_status = f'{self.state.zone_worker_status} | {self.state.position_worker_status}'
-
-    def set_volume(self, value: float) -> int:
-        volume = int(self.player.set_volume(value))
-        self.config.volume = volume
-        return volume
-
-    def set_muted(self, muted: bool) -> None:
-        self.player.set_muted(muted)
-        self.config.mute = bool(muted)
 
     @staticmethod
     def _position_display(coordinates: Coordinates | None) -> str:
         return '—' if coordinates is None else f'X={coordinates.x} | Y={coordinates.y}'
-
-    @staticmethod
-    def _position_overlay_screen_rect(
-        *,
-        full_rect: tuple[int, int, int, int],
-        result: PositionOCRResult | None,
-        roi_height: int,
-        roi_width: int,
-    ) -> tuple[int, int, int, int] | None:
-        if result is None or result.coordinates is None or roi_height <= 0 or roi_width <= 0:
-            return None
-        left, top, full_width, full_height = (int(v) for v in full_rect)
-        roi_overlay_width = coordinate_overlay_width(result, roi_height)
-        if roi_overlay_width <= 0:
-            return None
-        width = int(round(float(full_width) * min(roi_width, roi_overlay_width) / float(roi_width)))
-        return left, top, max(1, min(full_width, width)), full_height
 
     def _set_position(self, raw_text: str, coordinates: Coordinates | None) -> None:
         self.state.position_text = raw_text
@@ -411,288 +547,109 @@ class DofusicController:
         self.state.position_y = coordinates.y if coordinates else None
         self.state.position_display = self._position_display(coordinates)
 
-    def _stable_zone_overlay_rect(
-        self,
-        candidate: tuple[int, int, int, int],
-        *,
-        text_present: bool,
-    ) -> tuple[int, int, int, int]:
-        """Keep zone-outline width stable until OCR confirms a new text label.
 
-        Dynamic pixel trimming may temporarily see transition scenery as glyphs and
-        produce a very wide crop.  The displayed outline therefore accepts a new
-        width only after zone OCR has produced a non-empty *changed* label. X/Y and
-        height still follow the live Dofus window every frame.
+    def _stabilize_zone_capture(self, hud: HUDInputs, frame) -> HUDInputs:
+        """One shared ROI for recognition and its on-screen frame."""
+        stabilizer = getattr(self, '_zone_crop_stabilizer', None)
+        if stabilizer is None or hud.zone.size == 0:
+            return hud
+        image = frame.image
+        x, y = hud.transform.point(self.hud_geometry.zone_x, self.hud_geometry.zone_y)
+        x = max(0, min(image.shape[1] - 1, x))
+        y = max(0, min(image.shape[0] - 1, y))
+        h = hud.zone.shape[0]
+        max_width = image.shape[1] - x
+        width = stabilizer.observe(
+            hud.zone.shape[1], scale=hud.transform.scale,
+            window_id=int(frame.hwnd), maximum=max_width,
+        )
+        if width == hud.zone.shape[1]:
+            return hud
+        return HUDInputs(
+            zone=np.ascontiguousarray(image[y:y + h, x:x + width]),
+            position=hud.position, combat=hud.combat, transform=hud.transform,
+            toolbar_width=hud.toolbar_width,
+        )
+
+
+    def _toolbar_pointer_interference(self, frame, hud, *, now: float) -> bool:
+        """Ignore transient UI states while the cursor can affect HUD buttons.
+
+        The footprint is computed from the existing resolution transform. A
+        genuine combat change will still be recognized once interaction ends.
         """
-        x, y, candidate_width, height = (int(v) for v in candidate)
-        stable_width = getattr(self, '_zone_overlay_width_px', None)
-        if stable_width is None:
-            # Before the first OCR-confirmed zone, use the calibrated empty-preview
-            # width rather than trusting transition pixels across the whole client.
-            preview_width = max(32, int(round(max(1, height) * (96.0 / 34.0))))
-            stable_width = max(1, min(candidate_width, preview_width))
-            self._zone_overlay_width_px = stable_width
-
-        refresh = bool(getattr(self, '_zone_overlay_refresh_requested', False))
-        if refresh and text_present:
-            stable_width = max(1, candidate_width)
-            self._zone_overlay_width_px = stable_width
-            self._zone_overlay_refresh_requested = False
-            self._zone_overlay_candidate_width = None
-            self._zone_overlay_candidate_count = 0
-        elif text_present and bool(getattr(self, '_zone_overlay_text_key', '')):
-            # Recalibration / font scaling may change visible pixel width while
-            # OCR still recognizes the same zone. Accept only persistent, nearly
-            # identical measurements; do not follow one-frame scenery noise.
-            if abs(candidate_width - stable_width) <= 2:
-                self._zone_overlay_candidate_width = None
-                self._zone_overlay_candidate_count = 0
-            else:
-                previous = getattr(self, '_zone_overlay_candidate_width', None)
-                if previous is not None and abs(previous - candidate_width) <= 2:
-                    self._zone_overlay_candidate_count = getattr(self, '_zone_overlay_candidate_count', 0) + 1
-                else:
-                    self._zone_overlay_candidate_width = candidate_width
-                    self._zone_overlay_candidate_count = 1
-                if self._zone_overlay_candidate_count >= 3:
-                    stable_width = max(1, candidate_width)
-                    self._zone_overlay_width_px = stable_width
-                    self._zone_overlay_candidate_width = None
-                    self._zone_overlay_candidate_count = 0
+        guard = getattr(self, '_toolbar_interaction_guard', None)
+        if guard is None:
+            guard = self._toolbar_interaction_guard = ToolbarInteractionGuard()
+        pointer = screen_cursor_position()
+        transform = getattr(hud, 'transform', None)
+        rect = getattr(frame, 'screen_rect', None)
+        if pointer is not None and transform is not None and rect is not None:
+            x, y = transform.point(self.hud_geometry.combat_x, self.hud_geometry.combat_y)
+            width, height = transform.size(self.hud_geometry.combat_width,
+                                           self.hud_geometry.combat_height)
+            # Screen origin, not client origin: GetCursorPos uses screen pixels.
+            bounds = (rect[0] + x, rect[1] + y, width, height)
         else:
-            self._zone_overlay_candidate_width = None
-            self._zone_overlay_candidate_count = 0
+            bounds = (0, 0, 0, 0)
+        disturbed = guard.observe(cursor=pointer, bounds=bounds, now=now)
+        return disturbed
 
-        return x, y, max(1, int(stable_width)), max(1, height)
-
-    def _play_startup_generic(self, *, restart: bool) -> bool:
-        if not self.game_process_running:
-            self.state.status = 'En attente de Dofus.exe'
-            return False
-        if self.automatic_detection_unlocked or self.audio_override_active:
-            return False
-        try:
-            track = self.music_library.resolve(None, combat=False)
-        except Exception:
-            track = None
-            self.logger.exception('Résolution musique générique de démarrage impossible')
-        if track is None:
-            self._desired_local_track = None
-            self.state.music = 'Aucune musique'
-            self.state.status = 'En attente de la position Dofus'
-            return False
-
-        target = Path(track)
-        self._desired_local_track = target
-        try:
-            changed = bool(self.player.play(target, loop=True, restart=bool(restart)))
-        except Exception:
-            changed = False
-            self.logger.exception('Lecture musique générique de démarrage impossible: %s', target)
-        if changed or getattr(self.player, 'current', None) == target:
-            self.state.music = target.stem
-            self.state.display_theme = target.stem
-            self.state.status = 'Musique générique - attente position Dofus'
-            return True
-        self.state.status = 'Impossible de lire la musique générique'
-        return False
-
-    def _play_track(self, track: Path | None, *, status: str) -> None:
-        if track is None:
-            self._desired_local_track = None
-            self.state.status = 'Aucune musique associée'
-            return
-        self._desired_local_track = Path(track)
-        if not self.game_process_running:
-            self.state.status = 'En attente de Dofus.exe'
-            return
-        if not self.automatic_detection_unlocked:
-            self.state.status = 'En attente de la position Dofus'
-            return
-        if self.audio_override_active:
-            # Do not interrupt a manual/online override, but remember what OCR wants now.
-            self.state.status = status
-            return
-        try:
-            changed = self.player.play(track)
-        except Exception:
-            changed = False
-            self.logger.exception('Lecture audio impossible: %s', track)
-        if changed or getattr(self.player, 'current', None) == track:
-            self.state.music = track.stem
-            self.state.display_theme = track.stem
-        self.state.status = status
-
-    @property
-    def audio_override_active(self) -> bool:
-        return bool(getattr(self, '_audio_override_active', False))
-
-    @property
-    def audio_override_source(self) -> str | None:
-        if not getattr(self, '_audio_override_active', False):
-            return None
-        return getattr(self, '_audio_override_source', None)
-
-    @property
-    def online_audio_active(self) -> bool:
-        return self.audio_override_source == 'online'
-
-    @property
-    def automatic_detection_unlocked(self) -> bool:
-        # Default True keeps lightweight __new__-based internal consumers backward
-        # compatible; production instances always initialize the latch explicitly.
-        return bool(getattr(self, '_automatic_detection_unlocked', True))
-
-    def _play_audio_override(
-        self,
-        track: Path | str,
-        title: str,
-        *,
-        source: str,
-        loop: bool,
-    ) -> bool:
-        target = Path(track)
-        self._audio_override_active = True
-        self._audio_override_source = str(source)
-        try:
-            changed = bool(self.player.play(target, loop=bool(loop), restart=True))
-        except Exception:
-            changed = False
-            self.logger.exception('Lecture %s impossible: %s', source, target)
-        if changed:
-            self.state.music = (title or target.stem).strip() or target.stem
-            self.state.status = 'Lecture en ligne' if source == 'online' else 'Lecture locale manuelle'
-            return True
-        self._audio_override_active = False
-        self._audio_override_source = None
-        self.state.status = (
-            'Impossible de lire la musique en ligne'
-            if source == 'online'
-            else 'Impossible de lire la musique locale'
-        )
-        return False
-
-
-    def play_online_track(self, track: Path | str, title: str) -> bool:
-        return self._play_audio_override(track, title, source='online', loop=False)
-
-    def play_manual_local_track(
-        self,
-        track: Path | str,
-        title: str | None = None,
-        *,
-        loop: bool = False,
-    ) -> bool:
-        target = Path(track)
-        return self._play_audio_override(
-            target,
-            title or target.stem,
-            source='local',
-            loop=bool(loop),
-        )
-
-    def resume_local_audio(self) -> bool:
-        self._audio_override_active = False
-        self._audio_override_source = None
-        if not self.game_process_running:
-            try:
-                self.player.stop(fade_ms=self.config.fade_ms)
-            except Exception:
-                pass
-            self._desired_local_track = None
-            self.state.music = 'Aucune musique'
-            self.state.status = 'En attente de Dofus.exe'
-            return False
-        if not self.automatic_detection_unlocked:
-            return self._play_startup_generic(restart=True)
-        track = getattr(self, '_desired_local_track', None)
-        if track is None:
-            try:
-                track = self.music_library.resolve(None, combat=self.state.in_combat)
-            except Exception:
-                track = None
-        if track is None:
-            self.state.music = 'Aucune musique'
-            self.state.status = 'Retour à la musique locale'
-            return False
-        try:
-            changed = bool(self.player.play(track, loop=True, restart=True))
-        except Exception:
-            changed = False
-            self.logger.exception('Reprise audio locale impossible: %s', track)
-        if changed:
-            self.state.music = Path(track).stem
-            self.state.display_theme = Path(track).stem
-            self.state.status = 'Retour à la musique Dofus'
-        return changed
-
-    def _is_dungeon_context(self, location: LocationRecord | None = None) -> bool:
-        """Classifier uniquement le lieu confirmé; garder le dernier contexte pendant une occultation."""
-        target = getattr(self, 'current_location', None) if location is None else location
-        catalog = getattr(getattr(self, 'music_library', None), 'dungeon_catalog', None)
-        return bool(target is not None and catalog is not None and catalog.is_dungeon(target))
-
-    def _play_location(
-        self,
-        location: LocationRecord,
-        raw_text: str,
-        *,
-        new_generic_cycle: bool = False,
+    def _update_combat_from_toolbar(
+        self, toolbar: np.ndarray | None, *, disturbed: bool = False,
+        now: float | None = None,
     ) -> None:
-        # One-way boundary: only an already-confirmed location reaches the music library.
-        # Combat is an audio mode of that same confirmed context, not another resolver.
-        self.state.place = location.name
-        in_dungeon = self._is_dungeon_context(location)
-        combat = bool(self.state.in_combat and not in_dungeon)
-        self.state.in_combat = combat
-        track = self.music_library.resolve(
-            location,
-            raw_text=raw_text,
-            combat=combat,
-            new_generic_cycle=new_generic_cycle and not in_dungeon,
-        )
-        mode = 'combat' if combat else 'exploration'
-        self._play_track(track, status=f'Lieu confirmé : {location.name} ({mode})')
-        if track is None:
-            # Even with no audio file, the UI still has a stable user-facing context.
-            self.state.display_theme = location.parent_area_name or location.name
-
-    def _update_combat_from_toolbar(self, toolbar: np.ndarray | None) -> None:
-        # En donjon, le contexte positif fait foi : aucun besoin d'analyser
-        # une barre temporairement cachée ni de toucher au pipeline audio.
-        if self._is_dungeon_context():
-            if not getattr(self, '_combat_suspended_for_dungeon', False):
-                self.combat_tracker.reset()
-                self._combat_suspended_for_dungeon = True
-            self.state.in_combat = False
-            self.state.combat_confidence = 0.0
+        # One recognition result serves the overlay and audio decisions.
+        # Dungeon music always retains priority over generic combat music.
+        if disturbed:
+            # Do not even classify a hovered/animating toolbar. This protects
+            # the visual overlay and the audio from the same transient input.
+            self.combat_tracker.update(CombatObservation(None, 0.),
+                                       disturbed=True)
             return
-
-        if getattr(self, '_combat_suspended_for_dungeon', False):
-            self.combat_tracker.reset()
-            self._combat_suspended_for_dungeon = False
         observation = analyze_combat_toolbar(toolbar, self.hud_geometry)
         self.state.combat_confidence = float(observation.confidence)
-        transition = self.combat_tracker.update(observation)
+        transition = self.combat_tracker.update(observation, now=now)
         if transition is None:
             return
 
         self.state.in_combat = bool(transition)
-        label = 'combat' if transition else 'hors combat'
-        self.logger.info(
-            'COMBAT state=%s confidence=%.3f shape_similarity=%.3f',
-            label, observation.confidence, observation.luminance_ratio,
-        )
+        in_dungeon = self._is_dungeon_context()
 
-        # Recompute only the desired local audio. _play_track already guarantees
-        # that an active online/API track is never interrupted.
+        if not transition:
+            # A fight can hide the zone and coordinates. Resume both OCR channels
+            # on their next fresh frames (the combat HUD is still watched every
+            # capture frame), without retaining their old visual signatures.
+            position_gate = getattr(self, 'position_change_gate', None)
+            if position_gate is not None:
+                position_gate.reset()
+            # Restore the last genuine zone label before audio resolution and
+            # before the next fresh post-combat OCR has completed.
+            self.state.ocr_text = (
+                getattr(self, '_confirmed_zone_raw_text', '')
+                or (self.current_location.name if self.current_location else '')
+            )
+            # In-flight OCR captured during the fight must not become a new
+            # location immediately after combat. The next fresh frame will
+            # be scanned even when the HUD image has not changed.
+            self._zone_min_observed_at = time.monotonic()
+            gate = getattr(self, 'zone_change_gate', None)
+            if gate is not None:
+                gate.reset()
+        if in_dungeon:
+            # The dungeon already owns the soundtrack. Continue recognizing
+            # and displaying real combat, but never restart the dungeon music.
+            return
+
+        # Continue tracking the desired soundtrack while manual local playback
+        # temporarily owns the audio channel.
         if self.current_location is not None:
             # Entering combat starts a fresh generic-combat cycle. Leaving
             # combat intentionally does not reroll exploration: it restores the
             # exploration choice that was active before combat.
             self._play_location(
                 self.current_location,
-                self.state.ocr_text,
+                getattr(self, '_confirmed_zone_raw_text', '') or self.current_location.name,
                 new_generic_cycle=bool(self.state.in_combat),
             )
             return
@@ -706,9 +663,11 @@ class DofusicController:
 
     def _mark_unknown(self, now: float, reason: str) -> None:
         self.state.decision_state = DecisionState.UNKNOWN.value
-        self.logger.debug('Zone non confirmée: %s', reason)
         self.state.status = 'Zone non reconnue'
-        self.next_confirmation_at = now + self.config.pending_confirmation_interval_sec
+        # An unchanged, unknown (or unreadable) label does not need accelerated
+        # confirmations: OCRChangeGate retries on a real image change and at
+        # its normal idle interval. Only PENDING/AMBIGUOUS need fast retries.
+        self.next_confirmation_at = 0.0
 
         # A confirmed context is positive evidence. A single unreadable/unknown HUD
         # must never erase it or force generic audio; wait for a positive new location.
@@ -729,18 +688,6 @@ class DofusicController:
                 label = 'musique de combat générique' if self.state.in_combat else 'musique générique'
                 self._play_track(fallback, status=f'Aucun lieu fiable : {label}')
 
-    def _debug_evidence(self, evidence: LocationEvidence | None) -> str:
-        if not evidence:
-            return ''
-        top1 = evidence.top1
-        top2 = evidence.top2
-        return (
-            f"Top1={top1.location.name if top1 else '-'}/{top1.rank_score if top1 else 0:.1f} | "
-            f"Top2={top2.location.name if top2 else '-'}/{top2.rank_score if top2 else 0:.1f} | "
-            f"marge={evidence.margin:.1f} | position={self.state.position_display} | "
-            f"coord_bonus={evidence.coordinate_consistency:.2f}"
-        )
-
     def handle_position_result(
         self,
         result: PositionOCRResult,
@@ -750,6 +697,10 @@ class DofusicController:
     ) -> None:
         now = time.monotonic() if now is None else float(now)
         observation_time = now if observed_at is None else float(observed_at)
+        # OCR is asynchronous: never allow an older screenshot to overwrite
+        # coordinates confirmed by a more recent screenshot.
+        if observation_time < self.last_position_at:
+            return
         reference = self.context_position if self.current_location is not None else self.last_reliable_position
         coordinates = contextual_coordinates(
             result.raw_text,
@@ -759,7 +710,18 @@ class DofusicController:
             known_coordinate=lambda c: bool(self.repository.coordinate_candidates(c, tolerance=0)),
         )
         self.state.position_elapsed_ms = float(result.elapsed_ms)
-        self._set_position(result.raw_text, coordinates)
+        if coordinates is not None:
+            self._set_position(result.raw_text, coordinates)
+        else:
+            # OCR can be temporarily unreadable during movement. Keep the last
+            # verified coordinates on screen for the bounded context window;
+            # never turn an invalid OCR sample into a new confirmed position.
+            max_age = float(getattr(self.config, "position_context_max_age_sec", 4.0))
+            if (self.last_reliable_position is not None
+                    and 0.0 <= observation_time - self.last_position_at <= max_age):
+                self.state.position_text = result.raw_text
+            else:
+                self._set_position(result.raw_text, None)
         if coordinates is not None:
             self._accepted_position_result = PositionOCRResult(
                 result.raw_text, coordinates.x, coordinates.y, result.confidence,
@@ -770,12 +732,6 @@ class DofusicController:
             if not self.automatic_detection_unlocked:
                 self._automatic_detection_unlocked = True
                 self.state.automatic_detection_unlocked = True
-                self.logger.info(
-                    'AUTOMATION unlocked first_position=%s,%s',
-                    coordinates.x, coordinates.y,
-                )
-        if result.error:
-            self.logger.warning('Position OCR: %s', result.error)
 
     def handle_zone_result(
         self,
@@ -786,17 +742,42 @@ class DofusicController:
     ) -> None:
         now = time.monotonic() if now is None else float(now)
         observation_time = now if observed_at is None else float(observed_at)
+        # An OCR error or truncated older image is no more entitled to change
+        # the active context than a successful but obsolete OCR result.
+        if observation_time < getattr(self, 'last_zone_observed_at', float('-inf')):
+            return
+        # A queued result produced before the last combat ended is obsolete
+        # for audio/location decisions, even if consumed after that transition.
+        if observation_time < getattr(self, '_zone_min_observed_at', float('-inf')):
+            return
+        self.last_zone_observed_at = observation_time
         self.state.zone_elapsed_ms = float(result.elapsed_ms)
+        if bool(self.state.in_combat):
+            # Never let a masked/false HUD name (including a false dungeon)
+            # change the confirmed location, DecisionEngine history or music.
+            # Preserve the raw OCR observation for display without confirming a location.
+            self.state.ocr_text = result.text
+            self.state.confidence = float(result.confidence) if not result.error else 0.0
+            self.state.decision_state = DecisionState.UNKNOWN.value
+            return
         if result.error:
             self._mark_unknown(now, f'OCR zone: {result.error}')
             return
         if not result.text.strip():
-            self.state.ocr_text = ''
+            if self.current_location is None:
+                self.state.ocr_text = ''
             self.state.confidence = 0.0
             self._mark_unknown(now, 'Aucun nom de zone lisible')
             return
 
-        zone_text_key = clean_text(result.text).casefold()
+        # Reject one-off truncated OCR when a fuller confirmed name is known.
+        # Two coherent observations can still confirm a real move to a shorter
+        # zone; a single frame must not silently change the music.
+        continuity = getattr(self, '_zone_text_continuity', None)
+        if continuity is not None and continuity.hold(result.text):
+            self.state.status = 'Confirmation du nom de zone incomplet'
+            self.next_confirmation_at = now + self.config.pending_confirmation_interval_sec
+            return
 
         coordinates = None
         if (
@@ -811,168 +792,79 @@ class DofusicController:
         evidence = self.resolver.resolve(result.text, result.confidence, coordinates, timestamp=observation_time)
         self.last_evidence = evidence
         decision = self.decision.evaluate(evidence)
-        if (
-            decision.state is not DecisionState.UNKNOWN
-            and zone_text_key
-            and zone_text_key != getattr(self, '_zone_overlay_text_key', '')
-        ):
-            self._zone_overlay_text_key = zone_text_key
-            self._zone_overlay_refresh_requested = True
+
+
         self.state.ocr_text = result.text
         self.state.confidence = result.confidence
         self.state.decision_state = decision.state.value
-        self.state.debug_text = self._debug_evidence(evidence) if self.config.debug else ''
 
         if decision.state is DecisionState.CONFIRMED and decision.location is not None:
-            self.unknown_since = None
-            self.next_confirmation_at = 0.0
-            previous_location = self.current_location
-            self.current_location = decision.location
-            self.state.location = decision.location.name
-            self.state.location_key = decision.location.canonical_key
-            if coordinates is not None:
-                self.context_position = coordinates
-            elif previous_location is None or previous_location.canonical_key != decision.location.canonical_key:
-                self.context_position = None
-            location_changed = (
-                previous_location is None
-                or previous_location.canonical_key != decision.location.canonical_key
-            )
-            if location_changed:
-                self._play_location(
-                    decision.location,
-                    result.text,
-                    # A new exploration context gets a fresh generic draw. Combat
-                    # has its own cycle, started only on the combat transition, so
-                    # OCR/location refreshes during a fight cannot shuffle music.
-                    new_generic_cycle=bool(not self.state.in_combat),
-                )
-                self.logger.info(
-                    'LOCATION changed location=%s raw=%r conf=%.3f score=%.1f margin=%.1f coord=%s',
-                    decision.location.canonical_key,
-                    result.text,
-                    result.confidence,
-                    evidence.top1.rank_score if evidence.top1 else 0.0,
-                    evidence.margin,
-                    coordinates,
-                )
-            else:
-                # Re-confirming the same place updates confidence/context only.
-                # It must not resolve the library or touch the audio pipeline again.
-                self.state.place = decision.location.name
-                self.logger.debug(
-                    'LOCATION reconfirmed location=%s raw=%r conf=%.3f coord=%s',
-                    decision.location.canonical_key, result.text, result.confidence, coordinates,
-                )
+            self._accept_confirmed_zone(result, decision, evidence, coordinates, continuity)
             return
         if decision.state in (DecisionState.PENDING, DecisionState.AMBIGUOUS):
-            # Keep the last confirmed audio/context while the new textual candidate
-            # is being confirmed, but never promote the old place to a fresh
-            # confirmation merely because coordinates are nearby.
-            self.unknown_since = None
-            self.next_confirmation_at = now + self.config.pending_confirmation_interval_sec
-            if self.current_location is not None:
-                self.state.location = self.current_location.name
-                self.state.location_key = self.current_location.canonical_key
-            elif decision.location is not None:
-                self.state.location = decision.location.name
-            self.state.place = clean_text(result.text) or self.state.place
-            self.state.status = 'Vérification de la zone'
+            self._defer_zone(result, decision, now)
             return
         self._mark_unknown(now, decision.reason)
 
-    def _handle_event(self, channel: str, event, now: float) -> None:
-        slot = self.zone_slot if channel == 'zone' else self.position_slot
-        scheduler = slot.scheduler
-        if event.kind is OCREventKind.STARTING:
-            if channel == 'zone':
-                self.state.zone_worker_status = 'Chargement OCR zone'
-            else:
-                self.state.position_worker_status = 'Chargement OCR position'
-            self._refresh_worker_status()
-            return
-        if event.kind is OCREventKind.READY:
-            slot.ready = True
-            slot.fatal = False
-            if channel == 'zone':
-                self.state.zone_worker_status = 'OCR zone prêt'
-            else:
-                self.state.position_worker_status = 'OCR position prêt'
-            self._refresh_worker_status()
-            return
-        if event.kind is OCREventKind.RESULT and event.result is not None:
-            if event.request_id and not scheduler.completed(request_id=event.request_id, now=now):
-                self.logger.debug(
-                    'Résultat %s orphelin request=%s active=%s',
-                    channel, event.request_id, scheduler.active_request_id,
-                )
-                return
-            observed_at = float(getattr(event, 'captured_at', 0.0) or now)
-            submitted_at = float(getattr(event, 'submitted_at', 0.0) or observed_at)
-            finished_at = float(getattr(event, 'finished_at', 0.0) or now)
-            worker_ms = max(0.0, (finished_at - submitted_at) * 1000.0)
-            total_ms = max(0.0, (now - observed_at) * 1000.0)
-            log = self.logger.info if channel == 'zone' else self.logger.debug
-            log(
-                'OCR finished channel=%s request=%s worker_ms=%.0f total_ms=%.0f',
-                channel, event.request_id, worker_ms, total_ms,
+    def _accept_confirmed_zone(
+        self, result: ZoneOCRResult, decision: DecisionResult,
+        evidence: LocationEvidence, coordinates: Coordinates | None,
+        continuity: ZoneTextContinuity | None,
+    ) -> None:
+        """Only positively confirmed places can request a new soundtrack."""
+        self.unknown_since = None
+        self.next_confirmation_at = 0.0
+        previous_location = self.current_location
+        same_place = (previous_location is not None and
+                      previous_location.canonical_key == decision.location.canonical_key)
+        if continuity is not None and same_place:
+            original_label = continuity.confirmed
+            if original_label and original_label.casefold().startswith(clean_text(result.text).casefold()):
+                if len(clean_text(result.text)) < len(original_label):
+                    self.state.ocr_text = original_label
+        self.current_location = decision.location
+        self._confirmed_zone_raw_text = self.state.ocr_text
+        if continuity is not None:
+            continuity.confirm(result.text, same_place=same_place)
+        self.state.location = decision.location.name
+        self.state.location_key = decision.location.canonical_key
+        if coordinates is not None:
+            self.context_position = coordinates
+        elif previous_location is None or previous_location.canonical_key != decision.location.canonical_key:
+            self.context_position = None
+        location_changed = (
+            previous_location is None
+            or previous_location.canonical_key != decision.location.canonical_key
+        )
+        if location_changed:
+            self._play_location(
+                decision.location,
+                result.text,
+                # A new exploration context gets a fresh generic draw. Combat
+                # has its own cycle, started only on the combat transition, so
+                # OCR/location refreshes during a fight cannot shuffle music.
+                new_generic_cycle=bool(not self.state.in_combat),
             )
-            if channel == 'zone':
-                self.handle_zone_result(event.result, now=now, observed_at=observed_at)
-            else:
-                self.handle_position_result(event.result, now=now, observed_at=observed_at)
-            return
-        if event.kind is OCREventKind.ERROR:
-            if event.request_id:
-                if scheduler.active_request_id is not None and event.request_id != scheduler.active_request_id:
-                    self.logger.debug(
-                        'Erreur %s orpheline request=%s active=%s',
-                        channel, event.request_id, scheduler.active_request_id,
-                    )
-                    return
-                scheduler.failed(request_id=event.request_id, now=now)
-            else:
-                slot.fatal = True
-            if channel == 'zone':
-                self.state.zone_worker_status = 'Erreur OCR zone'
-                self.state.status = 'Erreur OCR zone'
-            else:
-                self.state.position_worker_status = 'Erreur OCR position'
-            self.logger.error('Worker %s: %s', channel, event.message)
-            self._refresh_worker_status()
-            return
-        if event.kind is OCREventKind.STOPPED:
-            if channel == 'zone':
-                self.state.zone_worker_status = 'OCR zone arrêté'
-            else:
-                self.state.position_worker_status = 'OCR position arrêté'
-            self._refresh_worker_status()
+        else:
+            # Re-confirming the same place updates confidence/context only.
+            # It must not resolve the library or touch the audio pipeline again.
+            self.state.place = decision.location.name
 
-    def _poll_workers(self, now: float) -> None:
-        for channel, worker, slot in (
-            ('zone', self.zone_worker, self.zone_slot),
-            ('position', self.position_worker, self.position_slot),
-        ):
-            try:
-                for event in worker.poll():
-                    self._handle_event(channel, event, now)
-            except Exception:
-                self.logger.exception('Lecture worker %s impossible', channel)
+    def _defer_zone(self, result: ZoneOCRResult, decision: DecisionResult, now: float) -> None:
+        """Pending/ambiguous places must not replace confirmed music."""
+        # Keep the last confirmed audio/context while the new textual candidate
+        # is being confirmed, but never promote the old place to a fresh
+        # confirmation merely because coordinates are nearby.
+        self.unknown_since = None
+        self.next_confirmation_at = now + self.config.pending_confirmation_interval_sec
+        if self.current_location is not None:
+            self.state.location = self.current_location.name
+            self.state.location_key = self.current_location.canonical_key
+        elif decision.location is not None:
+            self.state.location = decision.location.name
+        self.state.place = clean_text(result.text) or self.state.place
+        self.state.status = 'Vérification de la zone'
 
-            if self.started and not slot.fatal and not getattr(worker, 'alive', False):
-                if now - slot.last_restart_at >= self.config.worker_restart_backoff_sec:
-                    slot.last_restart_at = now
-                    try:
-                        # A dead worker can never return the in-flight result that
-                        # belonged to its old queues. Reset single-flight state before
-                        # restarting, otherwise the channel remains blocked forever.
-                        slot.scheduler.reset(request_refresh=True)
-                        slot.ready = False
-                        worker.restart()
-                    except Exception:
-                        slot.fatal = True
-                        self.logger.exception('Auto-redémarrage worker %s impossible', channel)
-        self._refresh_worker_status()
 
     def _submit_channel(
         self,
@@ -985,37 +877,25 @@ class DofusicController:
         if slot.fatal or slot.scheduler.active_request_id is not None:
             return False
         try:
-            submit = getattr(worker, 'submit', None)
-            if callable(submit):
-                request_id = submit(image, captured_at=captured_at)
-            else:
-                try:
-                    request_id = worker.submit_latest(image, captured_at=captured_at)
-                except TypeError as exc:
-                    if 'captured_at' not in str(exc):
-                        raise
-                    request_id = worker.submit_latest(image)
+            request_id = worker.submit(image, captured_at=captured_at)
         except Exception:
-            self.logger.exception('Envoi OCR impossible')
             return False
         if request_id is None:
             return False
         slot.scheduler.submitted(request_id=request_id, now=now)
-        channel = 'zone' if slot is self.zone_slot else 'position'
-        log = self.logger.info if channel == 'zone' else self.logger.debug
-        log(
-            'OCR submitted channel=%s request=%s capture_age_ms=%.0f',
-            channel, request_id, max(0.0, (now - captured_at) * 1000.0),
-        )
         return True
 
     def tick(self, *, now: float | None = None) -> ControllerState:
         now = time.monotonic() if now is None else float(now)
         if not self.started:
             self.start()
+        audio_tick = getattr(getattr(self, 'player', None), 'tick', None)
+        if callable(audio_tick):
+            audio_tick(now=now)
         if not self._sync_game_process(now):
             return self.state
         self._poll_workers(now)
+        self._retry_desired_audio(now)
 
         snapshot = self.capture_service.latest(self._last_capture_sequence, now=now)
         if snapshot is None:
@@ -1031,15 +911,6 @@ class DofusicController:
                 self.state.position_overlay_rect = None
             return self.state
         self._last_capture_sequence = snapshot.sequence
-        if snapshot.error:
-            previous_error = getattr(self, '_last_capture_error', '')
-            previous_log = float(getattr(self, '_last_capture_error_log_at', float('-inf')))
-            if snapshot.error != previous_error or now - previous_log >= 5.0:
-                self.logger.warning('Capture Dofus: %s', snapshot.error)
-                self._last_capture_error_log_at = now
-            self._last_capture_error = snapshot.error
-        else:
-            self._last_capture_error = ''
         frame = snapshot.frame
         captured_at = float(snapshot.captured_at)
 
@@ -1067,39 +938,51 @@ class DofusicController:
             frame.image, self.hud_geometry,
             transform=getattr(frame, 'hud_transform', None),
         )
+        hud = self._stabilize_zone_capture(hud, frame)
         if self.automatic_detection_unlocked:
-            self._update_combat_from_toolbar(hud.combat)
+            disturbed = self._toolbar_pointer_interference(frame, hud, now=now)
+            self._update_combat_from_toolbar(hud.combat, disturbed=disturbed, now=now)
 
-        # Only a genuinely visible capture is allowed to drive the screen overlay.
-        # PrintWindow is useful for OCR recovery but would let an overlay appear on
-        # top of a different foreground application, which is explicitly forbidden.
-        if frame.source == 'visible' and frame.screen_rect is not None:
-            rects = tracking_screen_rects(
-                capture_screen_rect=frame.screen_rect,
-                capture_image_shape=frame.image.shape,
-                hud=hud,
-                geometry=self.hud_geometry,
+        from dofusic.vision.overlay_projection import project_overlays
+        self._current_hud_window_id = int(frame.hwnd)
+        if not hasattr(self, '_zone_overlay_width'):
+            # Lightweight injected controllers used by tests may bypass __init__.
+            self._zone_overlay_width = ZoneOverlayWidthTracker()
+        zone_display_width = None
+        if frame.source == 'visible':
+            zone_display_width = self._zone_overlay_width.observe(
+                int(hud.zone.shape[1]), window_id=int(frame.hwnd),
+                scale=float(getattr(getattr(hud, 'transform', None), 'scale', 1.0)),
             )
-            self.state.overlay_hwnd = int(frame.hwnd)
-            self.state.combat_overlay_rect = rects.combat
-            self.state.zone_overlay_rect = self._stable_zone_overlay_rect(
-                rects.zone,
-                text_present=bool(hud.zone_display_width) or zone_crop_has_text(hud.zone),
-            )
-            self.state.position_overlay_rect = self._position_overlay_screen_rect(
-                full_rect=rects.position,
-                result=self._accepted_position_result,
-                roi_height=int(hud.position.shape[0]) if hud.position.ndim >= 2 else 0,
-                roi_width=int(hud.position.shape[1]) if hud.position.ndim >= 2 else 0,
-            )
-        else:
-            self.state.overlay_hwnd = None
-            self.state.combat_overlay_rect = None
-            self.state.zone_overlay_rect = None
-            self.state.position_overlay_rect = None
+        overlay = project_overlays(
+            source=frame.source, hwnd=frame.hwnd, screen_rect=frame.screen_rect,
+            image_shape=frame.image.shape, hud=hud, geometry=self.hud_geometry,
+            toolbar_buttons=getattr(getattr(self, 'combat_tracker', None), 'toolbar_buttons', None),
+            position_result=getattr(self, '_accepted_position_result', None),
+            zone_display_width=zone_display_width,
+        )
+        self.state.overlay_hwnd = overlay.hwnd
+        self.state.combat_overlay_rect = overlay.combat
+        self.state.zone_overlay_rect = overlay.zone
+        self.state.position_overlay_rect = overlay.position
 
+        self._schedule_ocr_for_hud(hud, now=now, captured_at=captured_at, source=frame.source)
+        return self.state
+
+    def _schedule_ocr_for_hud(
+        self, hud: HUDInputs, *, now: float, captured_at: float, source: str,
+    ) -> None:
+        """Single-flight OCR scheduling, independent of overlay publication."""
+        # The last confirmed location is the immutable musical context of a
+        # fight. Zone/position OCR cannot affect its soundtrack while combat is
+        # confirmed; continuing those ONNX scans wastes CPU and may introduce
+        # misleading observations from spell overlays. Combat recognition itself
+        # continues in tick() on EVERY captured toolbar frame. On combat exit
+        # _update_combat_from_toolbar resets both gates to force fresh OCR.
+        if bool(getattr(self.state, 'in_combat', False)):
+            return
         zone_confirmation_due = bool(self.next_confirmation_at and now >= self.next_confirmation_at)
-        zone_force = zone_confirmation_due or self.current_location is None
+        zone_force = zone_confirmation_due
         if (
             self.automatic_detection_unlocked
             and getattr(self.zone_worker, 'alive', False)
@@ -1109,11 +992,19 @@ class DofusicController:
             if zone_changed and self.zone_slot.scheduler.should_submit(
                 now=now,
                 min_interval=self.config.zone_ocr_min_interval_sec,
-                force=zone_confirmation_due,
+                # Force the visual gate for pending confirmations, not the
+                # single-flight rate limiter: even ambiguous OCR must obey
+                # the configured minimum interval between ONNX submissions.
+                force=False,
             ):
                 if self._submit_channel(self.zone_worker, self.zone_slot, hud.zone, now, captured_at):
+                    self._pending_zone_width = (
+                        self.zone_slot.scheduler.active_request_id,
+                        int(hud.zone.shape[1]), int(getattr(self, '_current_hud_window_id', 0)),
+                        float(getattr(getattr(hud, 'transform', None), 'scale', 1.0)),
+                    ) if source == 'visible' else None
                     self.zone_change_gate.mark_scanned(now=now)
-                    self.state.status = f'OCR zone en cours ({frame.source})'
+                    self.state.status = f'OCR zone en cours ({source})'
 
         if getattr(self.position_worker, 'alive', False) and not self.position_slot.fatal:
             position_force = self.last_reliable_position is None
@@ -1125,10 +1016,43 @@ class DofusicController:
                 if self._submit_channel(self.position_worker, self.position_slot, hud.position, now, captured_at):
                     self.position_change_gate.mark_scanned(now=now)
 
-        return self.state
+    def close_async(self) -> threading.Thread | None:
+        """Release Tk-owned audio now, close capture/child processes off the UI.
+
+        Called only after the music UI has released its session. The returned
+        capture cleanup thread can be joined *after* destroying the Tk window.
+        """
+        supervisor = getattr(self, '_ocr_supervisor', None)
+        if supervisor is None:
+            self.close()
+            return None
+        self.started = False
+        supervisor.shutdown()
+        try:
+            self.player.close()  # pygame mixer belongs to the Tk/main thread
+        except Exception:
+            pass
+        capture_close = threading.Thread(
+            target=self._close_capture_safely,
+            name='DofusicCaptureShutdown', daemon=False,
+        )
+        capture_close.start()
+        return capture_close
+
+    def _close_capture_safely(self) -> None:
+        try:
+            self.capture_service.close()
+        except Exception:
+            pass
 
     def close(self) -> None:
-        for component in (self.zone_worker, self.position_worker, self.capture_service, self.player):
+        supervisor = getattr(self, '_ocr_supervisor', None)
+        if supervisor is not None:
+            supervisor.shutdown()
+            components = (self.capture_service, self.player)
+        else:
+            components = (self.zone_worker, self.position_worker, self.capture_service, self.player)
+        for component in components:
             try:
                 component.close()
             except Exception:

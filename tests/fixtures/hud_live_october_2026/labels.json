@@ -1,0 +1,62 @@
+[
+  {
+    "fixture": "case_1.png",
+    "expected_zone": "Havre-Sac Kerubim",
+    "zone_roi_width": 223,
+    "state": "havresac_deplie",
+    "coords": {
+      "x": -31,
+      "y": -56
+    }
+  },
+  {
+    "fixture": "case_2.png",
+    "expected_zone": "Brâkmar (La Cuirasse)",
+    "zone_roi_width": 259,
+    "state": "exploration_replie",
+    "coords": {
+      "x": -26,
+      "y": 37
+    }
+  },
+  {
+    "fixture": "case_3.png",
+    "expected_zone": "Xélorium (Chemins d'hier)",
+    "zone_roi_width": 296,
+    "state": "combat_deplie",
+    "coords": {
+      "x": 1,
+      "y": 6
+    }
+  },
+  {
+    "fixture": "case_4.png",
+    "expected_zone": "Plaines de Cania (Routes Rocailleuses)",
+    "zone_roi_width": 433,
+    "state": "exploration_deplie",
+    "coords": {
+      "x": -20,
+      "y": -20
+    }
+  },
+  {
+    "fixture": "case_5.png",
+    "expected_zone": "Île de Moon (Plage de la Tortue)",
+    "zone_roi_width": 356,
+    "state": "combat_replie",
+    "coords": {
+      "x": 34,
+      "y": 12
+    }
+  },
+  {
+    "fixture": "case_6.png",
+    "expected_zone": "Havre-Sac Kerubim",
+    "zone_roi_width": 223,
+    "state": "havresac_replie",
+    "coords": {
+      "x": 34,
+      "y": 12
+    }
+  }
+]

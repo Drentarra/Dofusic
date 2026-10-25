@@ -151,12 +151,15 @@ if not exist "%ROOT%\Release\Dofusic\Dofusic.exe" (
     echo [ECHEC] Dofusic.exe absent de la release.
     goto :fail
 )
-if not exist "%ROOT%\Release\Dofusic\Data\UserData" (
-    echo [ECHEC] Data\UserData absent de la release.
+if not exist "%ROOT%\Release\PORTABLE_ARCHIVE_NAME.txt" (
+    echo [ECHEC] Manifest du ZIP portable absent.
     goto :fail
 )
-if not exist "%ROOT%\Release\Dofusic_V25_1_ECO_WINDOWS_X64.zip" (
-    echo [ECHEC] ZIP portable final absent.
+set "ZIP_NAME="
+for /f "usebackq delims=" %%N in ("%ROOT%\Release\PORTABLE_ARCHIVE_NAME.txt") do set "ZIP_NAME=%%N"
+if not defined ZIP_NAME goto :fail
+if not exist "%ROOT%\Release\%ZIP_NAME%" (
+    echo [ECHEC] ZIP portable final absent : "%ZIP_NAME%".
     goto :fail
 )
 
@@ -165,7 +168,7 @@ echo ==========================================================
 echo [OK] BUILD TERMINE
 echo ==========================================================
 echo Dossier : "%ROOT%\Release\Dofusic"
-echo ZIP     : "%ROOT%\Release\Dofusic_V25_1_ECO_WINDOWS_X64.zip"
+echo ZIP     : "%ROOT%\Release\%ZIP_NAME%"
 echo.
 echo Le ZIP genere est celui a partager.
 goto :success

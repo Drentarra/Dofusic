@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import deque
 
 from rapidfuzz import fuzz
@@ -32,7 +33,7 @@ class DecisionEngine:
         self.required_confirmations = max(2, int(required_confirmations))
         self.text_stability_min = float(text_stability_min)
         self.confirmation_max_gap_sec = max(0.1, float(confirmation_max_gap_sec))
-        self.history: deque[LocationEvidence] = deque(maxlen=max(3, int(history_size)))
+        self.history: deque[LocationEvidence] = deque(maxlen=max(3, int(history_size), self.required_confirmations))
         self.confirmed_key = ''
 
     def _same_recent(self, evidence: LocationEvidence) -> tuple[int, int]:
@@ -42,13 +43,23 @@ class DecisionEngine:
         current = normalize_text(evidence.raw_zone_text)
         same = 0
         close = 0
+        previous_timestamp = evidence.timestamp
         for old in reversed(self.history):
             # Confirmation is temporal continuity, not a vote over arbitrary old
             # observations. Any different/unknown location breaks the streak.
             if old.top1 is None or old.top1.location.canonical_key != key:
                 break
-            if evidence.timestamp - old.timestamp > self.confirmation_max_gap_sec:
+            # Only previous *admissible* evidence constitutes confirmation.
+            # Unknown/ambiguous OCR with a plausible top1 is not a vote.
+            if (not math.isfinite(old.ocr_confidence)
+                    or old.ocr_confidence < self.min_confidence
+                    or old.top1.mode is MatchMode.FUZZY and old.top1.score < self.min_fuzzy_score
+                    or old.top2 is not None and old.margin < self.min_margin):
                 break
+            age = previous_timestamp - old.timestamp
+            if not 0.0 < age <= self.confirmation_max_gap_sec:
+                break
+            previous_timestamp = old.timestamp
             same += 1
             previous = normalize_text(old.raw_zone_text)
             if previous and current and (previous == current or fuzz.WRatio(previous, current) >= self.text_stability_min):
@@ -56,12 +67,18 @@ class DecisionEngine:
         return same, close
 
     def evaluate(self, evidence: LocationEvidence) -> DecisionResult:
+        if not math.isfinite(evidence.timestamp):
+            return DecisionResult(DecisionState.UNKNOWN, None, evidence, 'horodatage OCR invalide')
+        if self.history and evidence.timestamp <= self.history[-1].timestamp:
+            # An obsolete asynchronous observation cannot influence the current
+            # confirmation streak or displace a newer recognized zone.
+            return DecisionResult(DecisionState.UNKNOWN, None, evidence, 'résultat OCR obsolète')
         top1 = evidence.top1
         if top1 is None:
             self.history.append(evidence)
             return DecisionResult(DecisionState.UNKNOWN, None, evidence, 'aucun candidat de lieu')
 
-        if evidence.ocr_confidence < self.min_confidence:
+        if not math.isfinite(evidence.ocr_confidence) or evidence.ocr_confidence < self.min_confidence:
             self.history.append(evidence)
             return DecisionResult(DecisionState.UNKNOWN, None, evidence, 'confiance OCR trop basse')
 

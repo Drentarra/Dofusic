@@ -19,6 +19,7 @@ class CaptureSnapshot:
     frame: CapturedFrame | None
     captured_at: float
     error: str = ''
+    window_mode: str = 'unknown'
 
 
 class CaptureService:
@@ -32,7 +33,11 @@ class CaptureService:
     def __init__(self, backend_factory: Callable[[], CaptureBackend], *, fps: int = 30) -> None:
         self._backend_factory = backend_factory
         self._period = 1.0 / max(1, int(fps))
+        self._unusable_capture_timeout_sec = 7.0
         self._lock = threading.Lock()
+        self._lifecycle_lock = threading.Lock()
+        self._desired_running = False
+        self._restart_pending = False
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._latest: CaptureSnapshot | None = None
@@ -42,21 +47,37 @@ class CaptureService:
     def alive(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    def start(self) -> None:
-        if self.alive:
-            return
-        self._stop.clear()
+    def _start_locked(self) -> None:
+        """Start exactly one backend after the preceding capture thread exits."""
+        self._stop = threading.Event()
+        self._restart_pending = False
         thread = threading.Thread(target=self._run, name='DofusicCapture', daemon=True)
         self._thread = thread
         thread.start()
 
-    def _publish(self, frame: CapturedFrame | None, captured_at: float, error: str = '') -> None:
+    def start(self) -> None:
+        with self._lifecycle_lock:
+            self._desired_running = True
+            if self.alive:
+                # A Win32 call can outlive close(timeout). Do not reopen the
+                # backend concurrently; arrange a restart in _run's finally.
+                if self._stop.is_set():
+                    self._restart_pending = True
+                return
+            self._start_locked()
+
+    def _publish(
+        self, frame: CapturedFrame | None, captured_at: float, error: str = '',
+        window_mode: str = 'unknown',
+    ) -> None:
         with self._lock:
             self._sequence += 1
-            self._latest = CaptureSnapshot(self._sequence, frame, float(captured_at), error)
+            self._latest = CaptureSnapshot(self._sequence, frame, float(captured_at), error, window_mode)
 
     def _run(self) -> None:
         backend: CaptureBackend | None = None
+        unusable_since: float | None = None
+        consecutive_errors = 0
         try:
             while not self._stop.is_set():
                 if backend is None:
@@ -72,9 +93,43 @@ class CaptureService:
                 cycle_started = time.monotonic()
                 try:
                     frame = backend.capture()
-                    self._publish(frame, time.monotonic())
+                    mode = str(getattr(backend, 'window_mode', 'unknown'))
+                    observed_at = time.monotonic()
+                    self._publish(frame, observed_at, window_mode=mode)
+                    consecutive_errors = 0
+                    # PrintWindow can keep OCR running while permanently
+                    # hiding the on-screen outline. A prolonged non-visible
+                    # capture is just as unhealthy as a missing frame. An
+                    # inconclusive (unknown) Win32 display mode is likewise
+                    # not proof the user switched to windowed mode.
+                    unusable = (
+                        (mode == 'fullscreen' and (frame is None or frame.source != 'visible'))
+                        or (mode == 'unknown' and frame is None)
+                    )
+                    if unusable:
+                        if unusable_since is None:
+                            unusable_since = observed_at
+                    else:
+                        unusable_since = None
                 except Exception as exc:
+                    consecutive_errors += 1
                     self._publish(None, time.monotonic(), f'{type(exc).__name__}: {exc}')
+                # Recover from a persistent PrintWindow-only, empty or unknown
+                # capture. Never recreate the backend for a genuine windowed
+                # reading; mode transitions remain controlled by the app.
+                exhausted = consecutive_errors >= 10 or (
+                    unusable_since is not None
+                    and time.monotonic() - unusable_since >= self._unusable_capture_timeout_sec
+                )
+                if exhausted and not self._stop.is_set():
+                    try:
+                        backend.close()
+                    except Exception:
+                        pass
+                    backend = None
+                    consecutive_errors = 0
+                    unusable_since = None
+                    self._stop.wait(0.35)
                 remaining = self._period - (time.monotonic() - cycle_started)
                 if remaining > 0:
                     self._stop.wait(remaining)
@@ -84,6 +139,11 @@ class CaptureService:
                     backend.close()
                 except Exception:
                     pass
+            with self._lifecycle_lock:
+                if self._thread is threading.current_thread():
+                    self._thread = None
+                    if self._desired_running and self._restart_pending:
+                        self._start_locked()
 
     def latest(self, after_sequence: int = 0, *, now: float | None = None) -> CaptureSnapshot | None:
         del now  # kept for interface parity with DirectCaptureService
@@ -94,14 +154,17 @@ class CaptureService:
         return snapshot
 
     def close(self, *, timeout: float = 1.5) -> None:
-        self._stop.set()
-        thread = self._thread
+        with self._lifecycle_lock:
+            self._desired_running = False
+            self._restart_pending = False
+            self._stop.set()
+            thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(0.0, float(timeout)))
-        # A slow Win32 grab may outlive the join timeout. Keep its reference:
-        # start() must never launch a second capture thread over the same backend.
-        if thread is None or not thread.is_alive():
-            self._thread = None
+        # If it is still alive, start() will defer reopening until _run exits.
+        with self._lifecycle_lock:
+            if self._thread is thread and (thread is None or not thread.is_alive()):
+                self._thread = None
 
 
 class DirectCaptureService:

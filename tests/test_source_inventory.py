@@ -9,7 +9,7 @@ from Data.tools.audit_sources import analyze_python, collect, report
 def test_source_inventory_checks_all_production_and_test_files():
     root = Path(__file__).resolve().parents[1]
     result = collect(root)
-    assert result['python_files_checked'] >= 100
+    assert result['python_files_checked'] >= 90
     assert result['invalid_python_files'] == {}
     assert result['duplicate_definitions'] == {}
     assert 'Data/dofusic/ui/main_window.py' in result['files']

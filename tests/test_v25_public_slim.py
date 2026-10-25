@@ -3,8 +3,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from dofusic.config import AppConfig, load_config
-from dofusic.online.models import OnlineTrack
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'Data'
@@ -32,43 +30,10 @@ def test_public_build_has_no_webview_dependency_or_session_button():
     assert 'session youtube' not in music
 
 
-def test_discovery_client_uses_injected_search_runner_without_browser():
-    from dofusic.online.discovery import YouTubeDiscoveryClient
-
-    calls = []
-
-    def runner(query: str, limit: int):
-        calls.append((query, limit))
-        return [
-            {
-                'id': 'abc123xyz00',
-                'title': 'Track test',
-                'uploader': 'Auteur',
-                'duration': 123,
-                'thumbnail': 'https://img.test/a.jpg',
-                'webpage_url': 'https://www.youtube.com/watch?v=abc123xyz00',
-            }
-        ]
-
-    client = YouTubeDiscoveryClient(search_runner=runner, suggestion_runner=lambda _q, _n: [])
-    result = client.search('  test   dofus  ', limit=5)
-    assert calls == [('test dofus', 5)]
-    assert result == (
-        OnlineTrack(
-            video_id='abc123xyz00',
-            title='Track test',
-            author='Auteur',
-            duration_seconds=123,
-            thumbnail_url='https://img.test/a.jpg',
-            source_url='https://www.youtube.com/watch?v=abc123xyz00',
-        ),
-    )
-
-
 def test_default_performance_profile_is_lightweight():
     cfg = AppConfig()
     assert cfg.ui_tick_ms >= 50
-    assert cfg.online_cache_mb <= 128
+    assert not any(name.startswith('online_') for name in cfg.__dataclass_fields__)
 
 
 def test_portable_build_downloads_only_live_ocr_model():
@@ -82,28 +47,18 @@ def test_portable_build_downloads_only_live_ocr_model():
     assert set(module.OCR_MODELS) == {'PP-OCRv6_rec_small.onnx'}
 
 
-def test_thumbnail_service_does_not_leak_per_video_locks(tmp_path):
-    from dofusic.online.thumbnails import ThumbnailService
+def test_loading_preferences_never_deletes_unrelated_user_folders(tmp_path):
+    # Startup must not recursively delete obsolete directories or user files.
+    old_folder = tmp_path / 'webview2'
+    old_folder.mkdir()
+    payload = old_folder / 'cookies.bin'
+    payload.write_bytes(b'user-file')
+    (tmp_path / 'config.json').write_text('{"volume":41}', encoding='utf-8')
 
-    service = ThumbnailService(tmp_path, fetcher=lambda *_args: b'not-an-image', max_items=16)
-    track = OnlineTrack(video_id='abc123xyz00', title='x')
-    assert service.get_png(track) == b''
-    assert service.active_lock_count == 0
+    loaded = load_config(tmp_path / 'config.json')
 
-
-def test_legacy_webview_profile_cleanup_is_scoped_to_dofusic_userdata(tmp_path):
-    from dofusic.config import cleanup_legacy_user_data
-
-    legacy = tmp_path / 'webview2'
-    legacy.mkdir()
-    (legacy / 'cookies.bin').write_bytes(b'x')
-    keep = tmp_path / 'keep.txt'
-    keep.write_text('keep', encoding='utf-8')
-
-    cleanup_legacy_user_data(tmp_path)
-
-    assert not legacy.exists()
-    assert keep.read_text(encoding='utf-8') == 'keep'
+    assert loaded.volume == 41
+    assert payload.read_bytes() == b'user-file'
 
 
 def test_ui_logo_asset_is_right_sized_for_actual_64px_usage():
@@ -116,24 +71,29 @@ def test_ui_logo_asset_is_right_sized_for_actual_64px_usage():
     assert logo.stat().st_size < 100_000
 
 
-def test_windows_builder_and_python_builder_agree_on_v25_zip_name():
+def test_windows_builder_and_python_builder_agree_on_versioned_zip_manifest():
+    from dofusic.version import __version__, portable_zip_name
+
     batch = (ROOT / 'BUILD_PORTABLE.bat').read_text(encoding='utf-8', errors='replace')
     builder = (DATA / 'tools' / 'build_portable.py').read_text(encoding='utf-8')
-    expected = 'Dofusic_V25_1_ECO_WINDOWS_X64.zip'
-    assert expected in batch
-    assert expected in builder
-    assert 'Dofusic_RC14_PORTABLE_WINDOWS_X64.zip' not in batch
+    assert portable_zip_name() == f'Dofusic_{__version__}_LOCAL_WINDOWS_X64_AVEC_MUSIQUES.zip'
+    assert portable_zip_name('2.3.4') == 'Dofusic_2.3.4_LOCAL_WINDOWS_X64_AVEC_MUSIQUES.zip'
+    assert 'PORTABLE_ARCHIVE_NAME.txt' in batch
+    assert 'PORTABLE_ARCHIVE_NAME.txt' in builder
+    assert '_1.0.15_LOCAL_WINDOWS' not in batch
+    assert '_1.0.15_LOCAL_WINDOWS' not in builder
 
 
 def test_live_spectrum_decode_is_downsampled_for_low_cpu_cost():
-    from dofusic.audio import player
+    from dofusic.audio import spectrum
 
-    assert player.SPECTRUM_FPS <= 15
-    assert player.SPECTRUM_SAMPLE_RATE <= 16_000
+    assert spectrum.SPECTRUM_FPS <= 15
+    assert spectrum.SPECTRUM_SAMPLE_RATE <= 16_000
 
 
 def test_release_validator_rejects_removed_browser_or_medium_artifacts(tmp_path):
     import importlib.util
+
     import pytest
 
     path = DATA / 'tools' / 'build_portable.py'

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import numpy as np
 
-from dofusic.audio import player
+from dofusic.audio import player, spectrum
 
 
 def _tone(hz: float, seconds: float = 2.0, sample_rate: int = 32000) -> np.ndarray:
@@ -17,7 +17,7 @@ def test_chunked_spectrum_matches_whole_track_shape_and_energy():
     samples = _tone(120.0, sample_rate=sample_rate)
     chunks = [samples[i:i + 1379] for i in range(0, len(samples), 1379)]
 
-    frames, sample_count = player.compute_spectrum_chunks(chunks, sample_rate, bands=24, fps=30)
+    frames, sample_count = spectrum.compute_spectrum_chunks(chunks, sample_rate, bands=24, fps=30)
 
     assert sample_count == len(samples)
     assert frames.shape[1] == 24

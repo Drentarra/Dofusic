@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import math
 import time
+from pathlib import Path
 from typing import Callable
 
 import cv2
@@ -9,9 +11,9 @@ import numpy as np
 from dofusic.config import models_dir
 from dofusic.location.coordinates import parse_coordinates, positions_compatible
 from dofusic.models import PositionOCRResult, ZoneOCRResult
+from dofusic.numeric import clamp_confidence
 from dofusic.text import clean_text
 from dofusic.vision.position import PositionCandidate, select_position_candidate
-
 
 Backend = Callable[..., object]
 
@@ -26,18 +28,23 @@ def onnx_runtime_params(cpu_threads: int) -> dict[str, object]:
 
 
 def _output_items(output: object) -> tuple[tuple[str, float], ...]:
-    texts = getattr(output, 'txts', None) or ()
-    scores = getattr(output, 'scores', None) or ()
+    texts = getattr(output, 'txts', None)
+    scores = getattr(output, 'scores', None)
+    if texts is None or scores is None:
+        return ()
     result: list[tuple[str, float]] = []
     for text, score in zip(texts, scores):
         cleaned = clean_text(text)
         if not cleaned:
             continue
         try:
-            confidence = max(0.0, min(1.0, float(score)))
-        except (TypeError, ValueError):
+            raw_confidence = float(score)
+        except (TypeError, ValueError, OverflowError):
             continue
-        result.append((cleaned, confidence))
+        if not math.isfinite(raw_confidence):
+            # Do not promote invalid OCR confidence to certain recognition.
+            continue
+        result.append((cleaned, clamp_confidence(raw_confidence)))
     return tuple(result)
 
 
@@ -64,13 +71,11 @@ class ZoneOCREngine:
         *,
         cpu_threads: int = 2,
         fast_accept_confidence: float = 0.76,
-        backend: Backend | None = None,
         fast_backend: Backend | None = None,
     ) -> None:
         self.cpu_threads = max(1, int(cpu_threads))
-        self.fast_accept_confidence = max(0.0, min(1.0, float(fast_accept_confidence)))
-        # ``backend`` remains an alias for tests/older callers.
-        self._fast_backend = fast_backend or backend
+        self.fast_accept_confidence = clamp_confidence(fast_accept_confidence, default=0.76)
+        self._fast_backend = fast_backend
         self.engine_name = 'RapidOCR/ONNX PP-OCRv6 Small Rec (live)'
 
     @staticmethod
@@ -145,7 +150,6 @@ class ZoneOCREngine:
             return ZoneOCRResult('', 0.0, (time.perf_counter() - started) * 1000.0, self.engine_name, str(exc))
 
 
-
 class PositionOCREngine:
     """Fast coordinate OCR isolated from zone recognition.
 
@@ -164,7 +168,7 @@ class PositionOCREngine:
     ) -> None:
         self.cpu_threads = max(1, int(cpu_threads))
         self.variants = tuple(variants)
-        self.fast_accept_confidence = max(0.0, min(1.0, float(fast_accept_confidence)))
+        self.fast_accept_confidence = clamp_confidence(fast_accept_confidence, default=0.84)
         self._backend = backend
         self._last_coordinates = None
         self.engine_name = 'RapidOCR/ONNX PP-OCRv6 Small Rec (position)'

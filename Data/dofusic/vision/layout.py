@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unicodedata import normalize
 
 import cv2
 import numpy as np
+
+from dofusic.vision.resolution_curve import reference_hud_scale
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,10 +34,10 @@ class HUDTransform:
 class HUDGeometry:
     """Single source of truth for Dofus' top-left toolbar and OCR HUD lines.
 
-    Dofus does not scale its HUD linearly with the desktop resolution. The
-    toolbar itself is therefore used as the runtime scale anchor. Reference
-    coordinates below describe the known-good 1920x1080 HUD; one transform is
-    then reused by capture, OCR crops and the passive overlay.
+    The live HUD geometry uses an offline-fitted monotone resolution curve,
+    never per-frame calibration. Reference values are from a 1920x1080 Dofus
+    client; only the right edges are measured from images.
+    Reference-image calibration lives only in tools/hud_reference.py.
     """
 
     reference_client_width: int = 1920
@@ -86,23 +89,23 @@ class HUDGeometry:
         client_height: int,
         *,
         ui_scale: float | None = None,
+        origin_y: int = 0,
     ) -> tuple[int, int, int, int]:
         """Return the top HUD capture strip in *physical client pixels*.
 
         Width always follows the actual client because zone names are dynamic.
-        Height follows the detected HUD scale, never the desktop resolution.
-        Before the first scale observation a conservative bootstrap strip is
-        captured; one frame later the strip contracts to the exact requirement.
+        Production passes a deterministic game-client resolution scale.
+        The optional bootstrap strip remains for offline compatibility tests.
         """
         client_width = max(0, int(client_width))
         client_height = max(0, int(client_height))
         if client_width <= 0 or client_height <= 0:
             return 0, 0, 0, 0
-        scale = None if ui_scale is None else max(0.35, min(3.0, float(ui_scale)))
+        scale = None if ui_scale is None else max(0.01, float(ui_scale))
         if scale is None:
             height = self.bootstrap_capture_height
         else:
-            height = int(round((self.reference_bottom + self.capture_margin) * scale))
+            height = max(0, int(origin_y)) + int(round((self.reference_bottom + self.capture_margin) * scale))
         height = max(self.combat_height, height)
         return 0, 0, client_width, min(client_height, height)
 
@@ -115,106 +118,79 @@ class HUDGeometry:
         return self.combat_x + x, self.combat_y + y, width, height
 
 
-def estimate_hud_transform(
-    image: np.ndarray,
-    geometry: HUDGeometry | None = None,
+def hud_transform_from_client_size(
+    client_width: int, client_height: int, *, geometry: HUDGeometry | None = None,
 ) -> HUDTransform | None:
-    """Infer HUD scale from the theme-independent toolbar background height.
+    """Build the HUD transform from the Dofus client size, never from pixels.
 
-    The first toolbar row is anchored at the client top-left. Its background is
-    contiguous while the pixels directly below it are black before the zone
-    label starts. Measuring that vertical run is more reliable than scaling from
-    desktop/client resolution and works with the green, purple and Havre-Sac UI.
+    The empirical scale depends on the limiting normalized client dimension,
+    with a plateau at 1x. Fullscreen is checked by the capture service.
+    The curve is computed only when the game's Win32 client size changes.
     """
     geometry = geometry or HUDGeometry()
-    if image is None or getattr(image, 'size', 0) == 0 or image.ndim < 2:
+    if (client_width <= 0 or client_height <= 0
+            or geometry.reference_client_height <= 0):
         return None
+    return HUDTransform(
+        scale=reference_hud_scale(
+            client_width, client_height,
+            reference_width=geometry.reference_client_width,
+            reference_height=geometry.reference_client_height,
+        ),
+        origin_x=0, origin_y=0,
+    )
+
+
+def measure_toolbar_right_at_transform(
+    image: np.ndarray, transform: HUDTransform, *, geometry: HUDGeometry | None = None,
+) -> int | None:
+    """Measure only the RIGHT edge of the toolbar at its known HUD origin.
+
+    Unlike the legacy global rim detector, this has no search across X/Y. It
+    probes one top-border row and validates the expected bottom edge around
+    the known toolbar height. Pop-ups can invalidate the width observation,
+    but can never change the origin, scale, or height. In that case the caller
+    falls back to the known physical button widths.
+    """
+    if image is None or getattr(image, 'size', 0) == 0 or image.ndim not in (2, 3):
+        return None
+    geometry = geometry or HUDGeometry()
     h, w = image.shape[:2]
-    if h < 24 or w < 48:
+    x, y = transform.point(geometry.combat_x, geometry.combat_y)
+    scale = transform.scale
+    bar_h = transform.size(1, geometry.toolbar_reference_height)[1]
+    # The first toolbar control must have enough visible material for the
+    # right edge and its validation stripe to be reliable.
+    min_span = max(12, round(28 * scale))
+    if x < 0 or y < 0 or x + min_span + 2 >= w or y + bar_h + 2 >= h:
         return None
-
-    probe_h = min(h, max(96, geometry.bootstrap_capture_height))
-    # A collapsed combat toolbar is only one +/- button wide. Probing the
-    # former 180-pixel row misses it at smaller UI scales and breaks both OCR
-    # and combat crops. Measure inside that first button instead.
-    probe_w = min(w, 32)
-    probe = image[:probe_h, :probe_w]
-    if probe.ndim == 2:
-        gray = probe.astype(np.uint8, copy=False)
-    else:
-        gray = cv2.cvtColor(probe, cv2.COLOR_BGR2GRAY)
-
-    active = gray > 8
-    row_fraction = active.mean(axis=1)
-    start_candidates = np.flatnonzero(row_fraction[: min(12, len(row_fraction))] > 0.20)
-    if start_candidates.size == 0:
+    source = image if image.ndim == 3 else image[:, :, None]
+    row = source[y, x:min(w, x + max(50, round(650 * scale)) + 2)].astype(np.int16)
+    color = np.median(row[:max(8, round(12 * scale))], axis=0)
+    if color.max() < 24 or color.max() - color.min() > 95:
         return None
-    origin_y = int(start_candidates[0])
-
-    low_run = 0
-    toolbar_end: int | None = None
-    for y in range(origin_y, len(row_fraction)):
-        if row_fraction[y] < 0.08:
-            low_run += 1
-            if low_run >= 3 and y - origin_y >= 20:
-                toolbar_end = y - low_run + 1
-                break
-        else:
-            low_run = 0
-    if toolbar_end is None:
-        # When outdoor scenery fills the rows immediately under the HUD,
-        # brightness cannot delimit its lower edge. Compare the material
-        # inside the first button with the rows beneath that same button.
-        # This keeps scale calibration independent of map brightness.
-        first_band = active[origin_y:min(probe_h, origin_y + 18)]
-        first_columns = np.flatnonzero(first_band.mean(axis=0) > 0.20) if first_band.size else np.empty(0)
-        first_x = int(first_columns[0]) if first_columns.size else 0
-        y0 = origin_y + 7
-        y1 = min(probe_h, origin_y + 13)
-        x0 = first_x + 5
-        x1 = min(probe_w, first_x + 9)
-        if y1 <= y0 or x1 <= x0:
-            return None
-        sample = probe[y0:y1, x0:x1]
-        if sample.size == 0:
-            return None
-        if sample.ndim == 2:
-            sample = sample[:, :, None]
-            source = probe[:, :, None] if probe.ndim == 2 else probe
-        else:
-            source = probe
-        material_color = np.median(sample, axis=(0, 1))
-        diff = np.abs(source[:, x0:x1].astype(np.float32) - material_color).max(axis=2)
-        agreement = (diff <= 34).mean(axis=1)
-        if float(np.mean(agreement[y0:y1])) < 0.65:
-            return None
-        low_run = 0
-        for y in range(origin_y + 20, len(agreement)):
-            if agreement[y] < 0.20:
-                low_run += 1
-                if low_run >= 3:
-                    toolbar_end = y - low_run + 1
-                    break
-            else:
-                low_run = 0
-        if toolbar_end is None:
-            return None
-
-    toolbar_height = toolbar_end - origin_y
-    if toolbar_height < 18 or toolbar_height > 120:
+    error = np.max(np.abs(row - color), axis=1)
+    differences = np.flatnonzero(error > 15)
+    width = int(differences[0]) if differences.size else 0
+    if width < min_span or width > min(round(650 * scale), w - x - 1):
         return None
-
-    # Find only the left edge; horizontal toolbar extent is intentionally ignored
-    # because Havre-Sac appends extra controls to the same row.
-    top_band = active[origin_y:toolbar_end, : min(w, 80)]
-    col_fraction = top_band.mean(axis=0) if top_band.size else np.empty((0,))
-    x_candidates = np.flatnonzero(col_fraction > 0.20)
-    origin_x = int(x_candidates[0]) if x_candidates.size else 0
-
-    scale = float(toolbar_height) / float(geometry.toolbar_reference_height)
-    if not 0.35 <= scale <= 3.0:
+    probe_x = x + min(max(2, round(4 * scale)), width - 1)
+    inside_y = y + max(1, round(2 * scale))
+    if np.max(np.abs(source[inside_y, probe_x].astype(np.float32) - color)) > 36:
         return None
-    return HUDTransform(scale=scale, origin_x=origin_x, origin_y=origin_y)
+    stripe_width = min(width, max(12, round(32 * scale)))
+    # Require a clear border close to the expected physical bar height;
+    # tolerate interpolation and +/-2 pixels from fractional scaling.
+    y_low = max(y + 1, y + bar_h - max(2, round(3 * scale)))
+    y_high = min(h - 1, y + bar_h + max(2, round(3 * scale)))
+    for edge_y in range(y_low, y_high + 1):
+        a = source[edge_y - 1, x:x + stripe_width].astype(np.int16)
+        b = source[edge_y, x:x + stripe_width].astype(np.int16)
+        # Bilinear image scaling softens a few edge pixels; >=88% remains
+        # sufficiently strict while supporting 1.5x reference images.
+        if float(np.mean(np.max(np.abs(b - a), axis=1) > 15)) >= .88:
+            return width
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,8 +202,8 @@ class HUDInputs:
     position: np.ndarray
     combat: np.ndarray | None = None
     transform: HUDTransform = HUDTransform()
-    # Visible text width only; OCR continues to use its independent full crop.
-    zone_display_width: int | None = None
+    # Physically measured full toolbar width, including Havre-Sac trailing controls.
+    toolbar_width: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -247,7 +223,7 @@ def toolbar_material_columns(image: np.ndarray, *, scale: float = 1.0) -> np.nda
     if image is None or getattr(image, 'size', 0) == 0 or image.ndim not in (2, 3):
         return np.empty((0,), dtype=np.float32)
     h, w = image.shape[:2]
-    scale = max(0.35, min(3.0, float(scale)))
+    scale = max(0.01, float(scale))
     y0, y1 = min(h, round(8 * scale)), min(h, round(29 * scale))
     x0, x1 = min(w, round(5 * scale)), min(w, round(9 * scale))
     if y1 <= y0 or x1 <= x0:
@@ -263,37 +239,42 @@ def toolbar_material_columns(image: np.ndarray, *, scale: float = 1.0) -> np.nda
     return (difference <= tolerance).mean(axis=0).astype(np.float32)
 
 
-def _visible_combat_toolbar_width(combat: np.ndarray | None, scale: float) -> int:
-    """Follow contiguous HUD button material, not pixels of the game scene."""
-    scale = max(0.35, min(3.0, float(scale)))
-    minimum = max(1, round(38 * scale))
-    if combat is None or getattr(combat, 'size', 0) == 0:
-        return minimum
-    height, width = combat.shape[:2]
-    if height < 10 or width <= minimum:
-        return min(width, minimum)
+def combat_toolbar_frame_width(button_count: int | None, scale: float) -> int:
+    """Stable rectangle from recognized UI state, never from scene brightness.
 
-    coverage = toolbar_material_columns(combat, scale=scale)
-    active = coverage >= 0.32
-    # A uniformly coloured/empty crop has no detectable final button edge.
-    # Do not draw a full-width outline merely because all pixels match.
-    if not np.any(active[minimum:]) or not np.any(coverage[minimum:] < 0.16):
-        return minimum
+    Dofus has a collapsed bar of one/two buttons and a six-button expanded bar.
+    The score used to recognize these states belongs to the combat detector;
+    geometry never guesses from pixels of the map.
+    """
+    # The final icon ends at reference x=203; five px of HUD edge follow.
+    # Collapsed states retain their already-validated widths.
+    sizes = {1: 38, 2: 76, 6: 208}
+    return max(1, round(sizes.get(button_count, 38) * max(.01, float(scale))))
 
-    # Gaps between actual buttons are short. Stop on the first longer gap:
-    # on Astrub, scenery to the right is bright but is not toolbar material.
-    max_gap = max(6, round(10 * scale))
-    gap = 0
-    last = minimum
-    for x in range(minimum, width):
-        if active[x]:
-            gap = 0
-            last = x
-        else:
-            gap += 1
-            if gap >= max_gap:
-                break
-    return min(width, max(minimum, last + 1 + max(1, round(3 * scale))))
+
+def verified_combat_toolbar_width(measured: int | None, button_count: int | None, scale: float) -> int:
+    """A decorative rim cannot overrule the physical size of known buttons.
+
+    The detector supplies the number of controls. The optional visual rim is
+    useful for longer Havre-Sac bars, but it can also stop at a tooltip, a
+    glyph or a hover highlight. Accept it only when it matches a physically
+    possible toolbar for the observed state; otherwise use the fixed size.
+    No map-specific adjustments or scene-brightness thresholds are involved.
+    """
+    fallback = combat_toolbar_frame_width(button_count, scale)
+    if measured is None or int(measured) <= 0:
+        return fallback
+    factor = max(.01, float(scale))
+    physical = float(measured) / factor
+    # A two-control Havre-Sac can retain trailing buttons; the expanded
+    # Havre-Sac is similarly longer than the regular six-control bar.
+    profiles = {1: (38,), 2: (76, 206), 6: (208, 305)}
+    options = profiles.get(button_count, (38, 76, 208, 305))
+    for expected in options:
+        if abs(physical - expected) <= max(5., expected * .055):
+            return int(measured)
+    return fallback
+
 
 def tracking_screen_rects(
     *,
@@ -301,6 +282,7 @@ def tracking_screen_rects(
     capture_image_shape: tuple[int, ...],
     hud: HUDInputs,
     geometry: HUDGeometry | None = None,
+    toolbar_buttons: int | None = None,
 ) -> HUDTrackingRects:
     """Map the exact OCR inputs back using the same runtime HUD transform."""
     geometry = geometry or HUDGeometry()
@@ -335,17 +317,15 @@ def tracking_screen_rects(
             max(1, int(round(crop_h * sy_screen))),
         )
 
-    # Le détecteur continue d'analyser les 320 px du HUD. Seul le contour
-    # affiché utilise la longueur du bandeau réellement présent à l'écran.
+    # Fixed top/left/height from HUD calibration; only the right edge varies.
+    # Prefer a measured border for *all* panels (especially Havre-Sac), falling
+    # back to the recognized icon state when the border is not observable.
     toolbar = map_reference_rect(
         geometry.combat_x, geometry.combat_y,
         geometry.combat_width, geometry.toolbar_reference_height,
     )
-    visible_width = _visible_combat_toolbar_width(hud.combat, transform.scale)
+    visible_width = verified_combat_toolbar_width(hud.toolbar_width, toolbar_buttons, transform.scale)
     zone_rect = map_crop(geometry.zone_x, geometry.zone_y, hud.zone)
-    if hud.zone_display_width is not None:
-        screen_zone_width = max(1, int(round(hud.zone_display_width * sx_screen)))
-        zone_rect = (zone_rect[0], zone_rect[1], screen_zone_width, zone_rect[3])
     return HUDTrackingRects(
         combat=(toolbar[0], toolbar[1], max(1, int(round(visible_width * sx_screen))), toolbar[3]),
         zone=zone_rect,
@@ -382,7 +362,7 @@ def _outlined_text_mask(image: np.ndarray) -> np.ndarray:
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     saturation = hsv[:, :, 1]
     value = hsv[:, :, 2]
-    bright = (value >= 135) & (saturation <= 180)
+    bright = (value >= 165) & (saturation <= 95)
     dark = (value <= 110).astype(np.uint8)
     near_dark = cv2.dilate(dark, np.ones((5, 5), dtype=np.uint8)) > 0
     return (bright & near_dark).astype(np.uint8)
@@ -403,6 +383,93 @@ def _remove_short_true_runs(active: np.ndarray, *, min_run: int = 2) -> np.ndarr
     return cleaned
 
 
+def _aligned_zone_glyph_columns(
+    mask: np.ndarray, *, wh: int, ww: int, initial_span: int,
+) -> np.ndarray | None:
+    """Keep components aligned with the first glyphs, rejecting stray scenery."""
+    n, labels, stats, centres = cv2.connectedComponentsWithStats(mask, 8)
+    min_area = max(4, round(4 * (wh / 34.0) ** 2))
+    components = []
+    for i in range(1, n):
+        left, top, width, height, area = (int(v) for v in stats[i])
+        if area < min_area:
+            continue
+        # A dash is often only two rows high; discarding every low component
+        # can make "- Salle du portail" disappear from an otherwise long HUD
+        # label. Admit a small *horizontal* punctuation candidate in the text
+        # band, then let the aligned-word continuity filter decide its fate.
+        is_dash = (1 <= height <= 3 and width >= max(5, round(wh * .14))
+                   and wh * .27 <= top <= wh * .53)
+        if height < max(3, round(wh * .13)) and not is_dash:
+            continue
+        components.append((i, left, left + width, float(centres[i][1])))
+
+    # A name begins near the HUD origin. Derive the shared text line from its
+    # first characters, not from a predetermined list of French place names.
+    anchors = [cy for _, left, _, cy in components if left < initial_span]
+    if not anchors:
+        return None
+    baseline = float(np.median(anchors))
+    aligned = np.zeros(ww, dtype=bool)
+    for i, left, right, cy in components:
+        if abs(cy - baseline) <= max(3.0, wh * .18):
+            aligned[left:right] = True
+    aligned = _remove_short_true_runs(aligned, min_run=2)
+
+    return aligned
+
+
+def _last_zone_glyph_column(
+    aligned: np.ndarray, *, wh: int, h: int, factor: float,
+    gap_stop: int, initial_span: int,
+) -> int | None:
+    """Find the last coherent glyph cluster, accounting for detached punctuation."""
+    seeds = np.flatnonzero(aligned[:initial_span])
+    if not seeds.size:
+        return None
+    # Split into plausible glyph clusters. A detached one/two-stroke flash on
+    # the scenery beyond a word gap is not enough evidence for another word.
+    runs: list[tuple[int, int]] = []
+    for x in range(len(aligned)):
+        if aligned[x] and (x == 0 or not aligned[x-1]):
+            runs.append((x, x + 1))
+        elif aligned[x]:
+            runs[-1] = (runs[-1][0], x + 1)
+    groups: list[list[tuple[int, int]]] = []
+    intra_word = max(8, round(wh * .45))
+    for run in runs:
+        if not groups or run[0] - groups[-1][-1][1] > intra_word:
+            groups.append([])
+        groups[-1].append(run)
+
+    last = int(seeds[0])
+    stop = max(8, round(gap_stop * factor), round(wh * .90),
+               round(37 * factor) if h < 24 else 0)
+    for group_index, group in enumerate(groups):
+        start, finish = group[0][0], group[-1][1]
+        if finish <= last:
+            continue
+        gap = start - last
+        # On long labels, a hyphen or punctuation mark may be detached from
+        # the following word by a wider gap. Extend only when the next group
+        # looks like a *word* (several aligned strokes); scenery singletons
+        # must not extend the capture arbitrarily.
+        tail_word = (
+            group_index + 1 < len(groups)
+            and len(groups[group_index + 1]) >= 4
+            and groups[group_index + 1][0][0] - finish <= max(24, round(wh * .8))
+        )
+        plausible_tail = len(group) >= 4 or (len(group) <= 2 and tail_word)
+        extended_gap = max(stop, round(65 * factor))
+        if gap > stop and (last < round(180 * factor) or gap > extended_gap or not plausible_tail):
+            break
+        if (h >= 24 and group_index and len(groups[0]) >= 6
+                and len(group) <= 2 and gap > intra_word and not tail_word):
+            break
+        last = finish - 1
+    return last
+
+
 def _trim_fixed_origin_text_group(
     image: np.ndarray,
     *,
@@ -410,44 +477,38 @@ def _trim_fixed_origin_text_group(
     padding: int,
     empty_preview_width: int,
 ) -> np.ndarray:
-    """Trim only the *right* edge of a calibrated left-anchored HUD line.
+    """Find a coherent *line* of outlined HUD glyphs, never just its first word.
 
-    The caller already knows the exact X/Y start of the Dofus slot. We never
-    move or rediscover that origin; this helper only follows outlined glyph
-    columns until the first real whitespace gap after text has been seen.
+    The ROI starts at the calibrated HUD origin. We measure the top text band
+    and associate outlined components with the first glyphs' vertical alignment.
+    The content boundary is a long absence of aligned glyphs, not a single
+    blank word separator. Scenery contrast alone cannot define the boundary.
+    OCR receives precisely the pixels measured for the visible rectangle.
     """
     if image is None or getattr(image, 'size', 0) == 0:
         return np.empty((0, 0, 3), dtype=np.uint8)
-
-    _h, w = image.shape[:2]
+    h, w = image.shape[:2]
     if w <= 1:
         return np.ascontiguousarray(image)
 
-    mask = _outlined_text_mask(image)
-    active = _remove_short_true_runs(mask.sum(axis=0) >= 2, min_run=2)
-    last_active: int | None = None
-    gap = 0
-    required_gap = max(4, int(gap_stop))
-
-    for x in range(w):
-        if active[x]:
-            last_active = x
-            gap = 0
-            continue
-        if last_active is None:
-            # The calibrated origin is preserved even if the font has a few
-            # blank columns before the first visible stroke.
-            continue
-        gap += 1
-        if gap >= required_gap:
-            end = min(w, last_active + 1 + max(2, int(padding)))
-            return np.ascontiguousarray(image[:, :end])
-
-    if last_active is None:
-        end = min(w, max(1, int(empty_preview_width)))
-    else:
-        end = min(w, last_active + 1 + max(2, int(padding)))
-    return np.ascontiguousarray(image[:, :end])
+    factor = 34.0 / h if h < 24 else 1.0
+    work = image if factor == 1.0 else cv2.resize(
+        image, None, fx=factor, fy=factor, interpolation=cv2.INTER_CUBIC,
+    )
+    wh, ww = work.shape[:2]
+    band_h = max(1, min(wh, round(wh * .69)))
+    mask = _outlined_text_mask(work)[:band_h]
+    initial_span = min(ww, max(round(wh * 3.0), round(64 * factor)))
+    aligned = _aligned_zone_glyph_columns(mask, wh=wh, ww=ww, initial_span=initial_span)
+    if aligned is None:
+        preview = max(1, min(w, round(empty_preview_width)))
+        return np.ascontiguousarray(image[:, :preview])
+    last = _last_zone_glyph_column(aligned, wh=wh, h=h, factor=factor,
+                                   gap_stop=gap_stop, initial_span=initial_span)
+    if last is None:
+        return np.ascontiguousarray(image[:, :max(1, min(w, round(empty_preview_width)))])
+    end = last + 1 + max(1, round(padding * factor))
+    return np.ascontiguousarray(image[:, :max(1, min(w, round(end / factor)))])
 
 
 def zone_crop_has_text(
@@ -480,15 +541,15 @@ def zone_crop_has_text(
 def trim_zone_line(
     image: np.ndarray,
     *,
-    gap_stop: int = 16,
-    padding: int = 12,
+    gap_stop: int = 42,
+    padding: int = 6,
     empty_preview_width: int = 96,
 ) -> np.ndarray:
-    """Return the exact left-anchored zone OCR crop.
+    """One common, live-pixel width for OCR and its visible tracking frame.
 
-    Zone X/Y/height are calibrated. Only the right edge is dynamic so long
-    labels remain fully visible while unrelated HUD content farther right is
-    excluded. No previous width or OCR result participates in this geometry.
+    Inter-word spaces (including before parentheses) are *not* line endings.
+    The HUD's own outlined glyphs determine the final right edge; OCR text is
+    never used to guess the crop or to override the rectangle.
     """
     return _trim_fixed_origin_text_group(
         image,
@@ -498,59 +559,130 @@ def trim_zone_line(
     )
 
 
-def visible_zone_text_width(image: np.ndarray, *, scale: float = 1.0) -> int | None:
-    """Measure the *display* text from its bright glyphs and dark outlines.
+# Visual guard only: no dependency on installed Windows fonts or the audio
+# resolver. Advances approximate the game's 20 px bold zone lettering at 1x.
+# This is deliberately used only to reject *grossly* oversized contours after
+# an accepted OCR result. The OCR image itself is never shrunk by this guard.
+_ZONE_GLYPHS = dict(zip(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ()-/.,:'%+!_",
+    (13.5, 14.3, 11.9, 14.3, 13.6, 8.7, 14.3, 14.2, 6.9, 6.9,
+     13.3, 6.9, 20.8, 14.2, 13.7, 14.3, 14.3, 9.9, 11.9, 9.6,
+     14.2, 13.0, 18.5, 12.9, 13.0, 11.6,
+     15.5, 15.2, 14.7, 16.6, 13.7, 13.7, 16.4, 16.7, 7.4, 7.4,
+     15.5, 12.8, 19.9, 16.7, 17.0, 14.7, 17.0, 15.4, 14.4,
+     13.6, 16.2, 15.5, 22.1, 15.4, 14.5, 14.5,
+     *([13.9] * 10), 7.0, 9.1, 9.1, 8.3, 7.3, 7.6, 7.6, 8.0,
+     6.1, 20.0, 16.8, 9.1, 10.0),
+))
 
-    The OCR's permissive image crop stays unchanged. The visual outline instead
-    uses the first zone-name line only, excluding coordinates and scenery
-    farther right. Return None for absent/unreliable text.
+
+def _zone_label_typographic_width(text: str, scale: float) -> int | None:
+    """Cheap approximate label length, only for rejecting excessive scenery."""
+    if not text or len(text) > 180:
+        return None
+    converted = normalize('NFKD', text).replace('œ', 'oe').replace('Œ', 'OE')
+    from unicodedata import combining
+    total = sum(_ZONE_GLYPHS.get(c, 0.0) for c in converted if not combining(c))
+    if not total or any(c not in _ZONE_GLYPHS for c in converted if not combining(c)):
+        return None  # Unknown alphabet: trust the live HUD rather than guessing.
+    return max(1, round(total * max(.01, float(scale)) + 6))
+
+
+class ZoneOverlayWidthTracker:
+    """Keep the WHITE contour tied to a credible OCR observation, not a hover.
+
+    OCR still processes the live, dynamic pixel crop independently. The screen
+    contour is updated only when a recognized zone text changes. Tooltips and
+    mouseover animations can alter the image-based width on every frame without
+    representing a real change of zone; they must not resize the contour.
     """
-    if image is None or getattr(image, 'size', 0) == 0 or image.ndim != 3:
-        return None
-    h, w = image.shape[:2]
-    y0 = min(h, max(0, round(2 * scale)))
-    y1 = min(h, max(y0 + 1, round(26 * scale)))
-    if h < 8 or w < 15 or y1 <= y0:
-        return None
 
-    # Most zone labels are short. Analyze only the left part of the HUD;
-    # extend progressively for unusually long names, never truncate them.
-    # This avoids processing the full 1920-pixel strip on every capture.
-    # Word spacing in bold zone names may exceed 13 pixels at full scale.
-    gap_limit = max(12, round(18 * scale))
-    scan_width = min(w, max(256, round(512 * scale)))
-    while True:
-        region = image[y0:y1, :scan_width, :3]
-        hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-        bright = (hsv[:, :, 2] >= 215) & (hsv[:, :, 1] <= 75)
-        near_dark = cv2.dilate(
-            (hsv[:, :, 2] <= 108).astype(np.uint8),
-            np.ones((5, 5), dtype=np.uint8),
-        ) > 0
-        columns = _remove_short_true_runs(
-            (bright & near_dark).sum(axis=0) >= 2, min_run=2,
-        )
-        first = np.flatnonzero(columns)
-        if first.size == 0 or int(first[0]) > max(24, round(38 * scale)):
-            return None
+    def __init__(self) -> None:
+        self.reset()
 
-        last = -1
-        gap = 0
-        ended = False
-        for x in range(scan_width):
-            if columns[x]:
-                last = x
-                gap = 0
-            elif last >= 0:
-                gap += 1
-                if gap >= gap_limit:
-                    ended = True
-                    break
-        if last < max(6, round(8 * scale)):
-            return None
-        if ended or scan_width >= w:
-            return min(w, last + 1 + max(3, round(6 * scale)))
-        scan_width = min(w, scan_width * 2)
+    def reset(self) -> None:
+        self.window_id: int | None = None
+        self.scale: float | None = None
+        self.width: int | None = None
+        self.text: str | None = None
+
+    def observe(self, proposed_width: int, *, window_id: int, scale: float) -> int:
+        if (self.window_id != int(window_id)
+                or (self.scale is not None and abs(float(scale) - self.scale) > .075)):
+            self.reset()
+        self.window_id = int(window_id)
+        self.scale = float(scale)
+        if self.width is None:
+            self.width = max(1, int(proposed_width))
+        return self.width
+
+    def confirm(self, text: str, width: int, *, window_id: int,
+                scale: float, confidence: float) -> bool:
+        # A merely nonempty or low-confidence OCR result may be a tooltip,
+        # not a replacement for a readable Dofus place label.
+        if not text.strip() or confidence < .80 or width < 1:
+            return False
+        if self.window_id != int(window_id) or self.scale is None or abs(scale - self.scale) > .075:
+            return False  # late result from an older window/scale
+        name = ' '.join(text.casefold().split())
+        if name != self.text:
+            measured = int(width)
+            estimated = _zone_label_typographic_width(text.strip(), scale)
+            # Scene decorations sometimes resemble outlined HUD glyphs and
+            # extend the dynamic crop by hundreds of pixels. Use typography
+            # only as a generous maximum, not to change normal measured widths.
+            if estimated is not None and measured > estimated + max(30, round(estimated * .18)):
+                measured = estimated
+            self.width = measured
+            self.text = name
+            return True
+        return False
+
+
+class ZoneCropStabilizer:
+    """Debounce live *capture* widths, not text/overlay widths separately.
+
+    Expansions and contractions require corroboration across frames; the OCR
+    crop and its overlay always use the exact same accepted width. A genuine
+    shorter or longer label is admitted after a small number of captures.
+    Reset on a different window or a material HUD-scale change.
+    """
+
+    def __init__(self, confirmations: int = 2, tolerance_px: int = 3):
+        self.confirmations = max(1, int(confirmations))
+        self.tolerance_px = max(0, int(tolerance_px))
+        self.reset()
+
+    def reset(self) -> None:
+        self.width: int | None = None
+        self.pending_width: int | None = None
+        self.pending_count = 0
+        self.scale: float | None = None
+        self.window_id: int | None = None
+
+    def observe(self, proposed_width: int, *, scale: float, window_id: int, maximum: int) -> int:
+        proposed_width = max(1, min(int(maximum), int(proposed_width)))
+        scale = float(scale)
+        if self.window_id != window_id or (self.scale is not None and abs(scale - self.scale) > .075):
+            self.reset()
+        self.window_id = window_id
+        self.scale = scale
+        if self.width is None:
+            self.width = proposed_width
+        elif abs(proposed_width - self.width) <= self.tolerance_px:
+            self.pending_width = None
+            self.pending_count = 0
+        else:
+            if self.pending_width is None or abs(proposed_width - self.pending_width) > self.tolerance_px:
+                self.pending_width, self.pending_count = proposed_width, 1
+            else:
+                self.pending_count += 1
+                if self.pending_count >= self.confirmations:
+                    self.width = proposed_width
+                    self.pending_width = None
+                    self.pending_count = 0
+        return min(int(maximum), self.width)
+
 
 def extract_hud_inputs(
     image: np.ndarray,
@@ -563,7 +695,7 @@ def extract_hud_inputs(
         empty = np.empty((0, 0, 3), dtype=np.uint8)
         return HUDInputs(empty, empty.copy(), empty.copy(), HUDTransform())
 
-    transform = transform or estimate_hud_transform(image, geometry) or HUDTransform()
+    transform = transform or HUDTransform()
     combat_rect = _transformed_rect(
         image,
         ref_x=geometry.combat_x,
@@ -595,18 +727,19 @@ def extract_hud_inputs(
     scale = transform.scale
     zone = trim_zone_line(
         zone_max,
-        gap_stop=max(10, int(round(16 * scale))),
-        padding=max(4, int(round(12 * scale))),
+        gap_stop=max(8, int(round(42 * scale))),
+        padding=max(2, int(round(6 * scale))),
         empty_preview_width=max(32, int(round(96 * scale))),
     )
     # Recognition gets the complete calibrated 180 px slot. Overlay width is
     # computed later from the accepted PositionOCRResult, never from these pixels.
     position = np.ascontiguousarray(position_max)
+    # Known origin/height: probe only the RIGHT edge (no X/Y search).
+    measured_width = measure_toolbar_right_at_transform(image, transform, geometry=geometry)
     return HUDInputs(
         combat=combat,
         zone=zone,
         position=position,
         transform=transform,
-        zone_display_width=visible_zone_text_width(zone_max, scale=scale),
+        toolbar_width=measured_width,
     )
-

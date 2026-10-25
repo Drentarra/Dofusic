@@ -1,0 +1,62 @@
+{
+  "version": "2.0.0",
+  "python": "3.12.14",
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+  "dependencies": {
+    "numpy": "2.4.6",
+    "opencv-python-headless": "4.14.0.94",
+    "rapidfuzz": "3.14.6"
+  },
+  "location_repeated": {
+    "median_ms_per_call": 0.007277953000027537,
+    "batch_ms_per_call": [
+      0.015044430999978431,
+      0.00717008000003716,
+      0.007247146999986853,
+      0.007305242999962047,
+      0.007277953000027537
+    ],
+    "iterations_per_batch": 1000,
+    "batches": 5
+  },
+  "location_varying": {
+    "median_ms_per_call": 0.0321114179999995,
+    "batch_ms_per_call": [
+      0.044191004000026624,
+      0.032177697999998145,
+      0.0321114179999995,
+      0.03178224200001978,
+      0.03126934100004064
+    ],
+    "iterations_per_batch": 1000,
+    "batches": 5
+  },
+  "hud_explicit_transform": {
+    "median_ms_per_call": 0.42839431700002706,
+    "batch_ms_per_call": [
+      0.5186237859999778,
+      0.43007838599999104,
+      0.3919172650000178,
+      0.42839431700002706,
+      0.4152595099999985
+    ],
+    "iterations_per_batch": 1000,
+    "batches": 5
+  },
+  "spectrum_3_seconds": {
+    "median_ms_per_call": 1.5389771000002384,
+    "batch_ms_per_call": [
+      1.5671265000037238,
+      1.807298700003912,
+      1.5389771000002384,
+      1.5224211000031573,
+      1.5233416000000943
+    ],
+    "iterations_per_batch": 10,
+    "batches": 5
+  },
+  "runtime_source_files": 53,
+  "runtime_source_bytes": 425256,
+  "runtime_marshaled_bytecode_bytes": 555133,
+  "limitations": "Synthetic Linux/Windows CPU scenarios; no live capture, OCR inference or compiled EXE measurement."
+}

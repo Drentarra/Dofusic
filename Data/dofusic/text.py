@@ -70,7 +70,6 @@ def _strip_accents_cached(text: str) -> str:
     return ''.join(char for char in value if unicodedata.category(char) != 'Mn')
 
 
-
 @lru_cache(maxsize=TEXT_CACHE_SIZE)
 def _normalize_text_cached(text: str) -> str:
     value = _strip_accents_cached(text)
@@ -87,7 +86,6 @@ def _words_cached(text: str) -> tuple[str, ...]:
     return tuple(re.findall(r'[a-z0-9]+', _normalize_text_cached(text)))
 
 
-
 def _soft_singular(word: str) -> str:
     if len(word) >= 4 and word.endswith('s') and not word.endswith('ss'):
         return word[:-1]
@@ -97,7 +95,6 @@ def _soft_singular(word: str) -> str:
 @lru_cache(maxsize=TEXT_CACHE_SIZE)
 def _match_words_cached(text: str) -> tuple[str, ...]:
     return tuple(_soft_singular(word) for word in _words_cached(text))
-
 
 
 @lru_cache(maxsize=TEXT_CACHE_SIZE)
@@ -203,6 +200,12 @@ def _text_similarity_words(target_words: Sequence[str], observed_words: Sequence
     return TextSimilarity(score, TextMatchMode.FUZZY, coverage)
 
 
+@lru_cache(maxsize=2048)
+def _cached_text_similarity(target_words: tuple[str, ...], observed_words: tuple[str, ...]) -> TextSimilarity:
+    """Bounded reuse of pure comparisons across repeated zone OCR refreshes."""
+    return _text_similarity_words(target_words, observed_words)
+
+
 def text_similarity(target: object, observed: object) -> TextSimilarity:
     """Directionally compare a canonical place label with observed HUD text."""
-    return _text_similarity_words(content_words(target), content_words(observed))
+    return _cached_text_similarity(content_words(target), content_words(observed))

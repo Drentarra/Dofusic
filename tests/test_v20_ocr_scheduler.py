@@ -36,7 +36,9 @@ def test_scheduler_enforces_cadence_after_fast_completion():
 def test_worker_client_submit_never_replaces_already_queued_request():
     import queue
     from types import SimpleNamespace
+
     import numpy as np
+
     from dofusic.vision.workers import OCRWorkerClient
 
     client = OCRWorkerClient(channel='zone')

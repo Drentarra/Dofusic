@@ -1,117 +1,50 @@
-# Dofusic 🎵
+# Dofusic 2.0.0
 
 [**Télécharger la dernière version**](https://github.com/Drentarra/Dofusic/releases/latest/download/Dofusic.zip)
 
-Dofusic change automatiquement la musique de Dofus selon la zone où vous êtes et si vous êtes en combat.
+Dofusic adapte la musique locale à la zone et aux combats de **Dofus**, à partir de la fenêtre du jeu. Application indépendante pour Windows x64.
 
-Je l'ai fait pour pouvoir remplacer facilement les musiques du jeu tout en gardant des changements automatiques quand je me déplace ou que je lance un combat.
+Cette archive contient le **code source**, les tests et les ressources de référence. Elle ne contient ni exécutable, ni modèles OCR téléchargés, ni pistes musicales. Les changements et les mesures de cette version sont détaillés dans [CHANGELOG.md](CHANGELOG.md) et [l'audit V2.0.0](docs/AUDIT_V2.0.0.md).
 
-## Fonctionnement
+## Utilisation
 
-**Désactivez les musiques de Dofus avant d'utiliser Dofusic.**
+1. Désactivez la musique de Dofus pour éviter deux lectures simultanées.
+2. Extrayez `Dofusic.zip` puis lancez `Dofusic.exe`.
+3. Ouvrez Dofus en plein écran. Dofusic détecte sa fenêtre et attend la première position valide avant de lancer la sélection automatique.
+4. Placez vos morceaux dans `Musiques/`, en conservant les noms attendus pour les zones et les musiques génériques (`Musique.opus`, `Musique1.opus`, etc.).
 
-Dofusic lit la position et la zone affichées dans le jeu pour pouvoir :
+La fenêtre « Musiques locales » permet également la recherche, la lecture manuelle, la file d'attente, la répétition et le retour au mode automatique. Formats audio pris en charge : OPUS, MP3, OGG, FLAC, WAV, M4A, AAC, WMA, WEBM, MKA, AIFF et AC3. **Opus 64 kb/s** constitue un compromis intéressant pour réduire la taille des musiques.
 
-- changer de musique selon la zone ;
-- détecter les combats ;
-- lancer une musique de combat ;
-- reprendre la musique de zone après le combat ;
-- utiliser des musiques génériques quand aucune musique particulière n'est prévue.
+**Le ZIP de la release GitHub Actions contient** `Dofusic.exe`, `Data/` et les pistes du dossier `Musiques/` suivies dans le dépôt. Le compilateur refuse les publications sans fichier OPUS ; les fichiers audio doivent donc être présents avant la compilation. La distribution ne nécessite ni Python, ni installation, ni compte en ligne.
 
-Si Dofus n'est pas ouvert, la détection automatique reste désactivée.
+## Vie privée et fichiers locaux
 
-## Musiques personnelles
+La reconnaissance des zones, positions et combats fonctionne localement. Le logiciel ne contient ni télémétrie applicative, ni client réseau pour transférer les images, ni mécanisme d'enregistrement des écrans. **Aucun journal de diagnostic ou de plantage n'est écrit par Dofusic.**
 
-Le téléchargement officiel contient directement les musiques utilisées par Dofusic.
+Les préférences (volume, apparence, dossiers, etc.) sont enregistrées dans `Data/UserData/config.json` lorsque l'emplacement est inscriptible, sinon dans `%LOCALAPPDATA%\Dofusic\config.json`. Les données temporaires de capture et d'OCR restent en mémoire. Si un format audio nécessite une conversion de secours, FFmpeg crée un fichier audio temporaire, nettoyé après utilisation. Ces garanties ne concernent pas les mécanismes propres à Windows, à l'antivirus ou à GitHub Actions. Informations complémentaires : [politique de confidentialité](Data/PRIVACY.md).
 
-Vous pouvez aussi ajouter ou remplacer des morceaux dans ce dossier.
+## Code source et compilation
 
-Formats pris en charge notamment :
+Le runtime est dans `Data/dofusic/`, les ressources dans `Data/`, la compilation dans `Data/tools/build_portable.py` et la suite de tests dans `tests/`.
 
-`OPUS` `MP3` `OGG` `FLAC` `WAV` `M4A` `AAC` `WMA` `WEBM` `MKA` `AIFF` `AC3`
+Sur Windows x64, ajoutez vos pistes dans `Musiques/`, dont au moins un fichier `.opus` non vide, puis exécutez `BUILD_PORTABLE.bat`. Le script utilise un environnement de compilation isolé, télécharge les dépendances et les modèles OCR vérifiés, exécute les tests, construit une distribution PyInstaller *onedir* et vérifie le portable avant publication. Ces accès réseau n'interviennent pas lors de la lecture musicale chez l'utilisateur.
 
-Le format conseillé est **Opus 64 kb/s** pour garder une bonne qualité avec des fichiers légers.
+Pour exécuter les tests depuis la racine du projet (avec les dépendances installées) :
 
-Les fichiers nommés `Musique.opus`, `Musique1.opus`, `Musique2.opus`, etc. servent de musiques génériques.
-
-## Musique en ligne
-
-L'onglet Online permet de rechercher et d'écouter une musique directement depuis Dofusic.
-
-Les morceaux téléchargés par Dofusic sont enregistrés en Opus 64 kb/s afin de limiter leur poids.
-
-## Installation
-
-Dofusic est portable :
-
-1. Téléchargez `Dofusic.zip` dans **Releases**.
-2. Décompressez l'archive.
-3. Lancez `Dofusic.exe`.
-4. Lancez Dofus.
-
-Il n'y a rien à installer.
-
-Évitez simplement de déplacer ou supprimer les fichiers présents dans `Data`.
-
-Les releases officielles sont construites par GitHub Actions. Les utilisateurs avancés peuvent vérifier la provenance du ZIP avec :
-
-```powershell
-gh attestation verify Dofusic.zip --repo Drentarra/Dofusic
+```bash
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
+python -m pytest -q
 ```
 
-## Premier lancement
+La CI exécute les tests, l'analyse statique et les contrôles OCR même dans un dépôt sans musique. Elle construit aussi le portable lorsque les pistes sont présentes. Le build local et le workflow de publication restent stricts : ils refusent un portable sans OPUS. Après construction, `VERIFIER_PORTABLE_WINDOWS.ps1` permet de contrôler plusieurs cycles de démarrage et de fermeture.
 
-Dofusic attend d'avoir détecté une première position valide avant d'activer complètement la gestion automatique des zones et des combats.
+Le build embarque les modèles OCR ONNX requis, la base de données de zones, le moteur audio local et les bibliothèques nécessaires, sans inclure les tests, journaux ni données utilisateur. Les rapports de build et les empreintes SHA-256 restent hors du ZIP public.
 
-Ça évite que le programme change de musique pendant les écrans de connexion ou de sélection de personnage.
+## Problèmes et contributions
 
-## Paramètres
+Ouvrez une [issue](https://github.com/Drentarra/Dofusic/issues) avec le contexte, la version et les étapes de reproduction. Ne joignez pas de données personnelles, de captures sensibles ou de dossiers de configuration. Les vulnérabilités sont à signaler selon [SECURITY.md](SECURITY.md).
 
-Les paramètres permettent notamment de modifier :
+## Licence et indépendance
 
-- le volume ;
-- la durée des fondus ;
-- le visualiseur audio ;
-- les options de musique en ligne ;
-- le cache ;
-- l'apparence de Dofusic.
-
-Les réglages sont conservés entre les lancements.
-
-## Code source
-
-Le code source est dans le dossier `Data` et les tests automatisés dans `tests`.
-
-Le build portable Windows peut être lancé avec `BUILD_PORTABLE.bat`.
-
-## À savoir
-
-Dofusic fonctionne actuellement sous **Windows 64 bits**.
-
-Le programme utilise uniquement ce qui est affiché par Dofus pour reconnaître les zones et les positions. Il ne modifie pas les fichiers du jeu.
-
-## Bugs / problèmes
-
-Si vous trouvez un bug, ouvrez une **Issue** sur GitHub avec si possible :
-
-- ce que vous faisiez au moment du problème ;
-- votre version de Dofusic ;
-- la zone concernée ;
-- une capture d'écran si elle peut aider.
-
-## Licence
-
-Le code de Dofusic est distribué sous licence MIT.
-
-## Dofus / Ankama
-
-Dofusic est un projet indépendant.
-
-Il n'est ni développé, ni approuvé, ni affilié à Ankama.
-
-Dofus et les éléments associés à Dofus appartiennent à leurs propriétaires respectifs.
-
-<img width="1896" height="692" alt="4" src="https://github.com/user-attachments/assets/30137adc-7de3-4af7-803d-bd43aaa2e442" />
-<img width="1350" height="594" alt="3" src="https://github.com/user-attachments/assets/ab23abeb-01ab-42d3-afc0-43bc2836e0c8" />
-<img width="1410" height="892" alt="2" src="https://github.com/user-attachments/assets/c007098e-f295-4e77-9e0c-792670179915" />
-<img width="1209" height="957" alt="1" src="https://github.com/user-attachments/assets/d669c7be-27a1-4ecc-83e3-10d5b5ea3b09" />
+Le code source est distribué sous [licence MIT](LICENSE). Dofusic est indépendant d'Ankama ; il n'est ni développé, ni approuvé, ni affilié à Ankama. Les marques Dofus et Ankama appartiennent à leurs titulaires.

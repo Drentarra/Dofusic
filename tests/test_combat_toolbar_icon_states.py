@@ -6,7 +6,6 @@ The outer scenery is generated independently and varies across scenarios.
 """
 from __future__ import annotations
 
-import cv2
 import numpy as np
 import pytest
 

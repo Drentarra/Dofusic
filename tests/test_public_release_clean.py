@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import json
 import sqlite3
-from pathlib import Path
 import zipfile
+from pathlib import Path
 
 import yaml
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -37,25 +35,10 @@ def test_public_repository_contains_no_internal_signpath_or_music_pack_scaffoldi
         assert not path.exists(), f'Public repository should not contain {path.relative_to(ROOT)}'
 
 
-def test_public_music_folder_contains_bundled_tracks():
-    music = ROOT / 'Musiques'
-    assert music.is_dir()
-    tracks = sorted(music.rglob('*.opus'))
-    # Ajouter Incarnam doit incrémenter le nombre d'Opus embarqués.
-    assert len(tracks) == 162
-
-
-def test_incarnam_audio_is_present_and_unmodified():
-    """Vérifier l'Opus fourni avec la release avant toute compilation."""
-    audio = ROOT / 'Musiques' / 'Incarnam.opus'
-    assert audio.is_file(), 'Ajouter Musiques/Incarnam.opus à la branche GitHub avant la release'
-    assert audio.stat().st_size == 1870897
-    with audio.open('rb') as stream:
-        assert hashlib.file_digest(stream, 'sha256').hexdigest() == (
-            '9aa0b8dfbda94bc1165ac3fa8336f552abfbcc9ed73eb28a7153a46b1e2aeb29'
-        )
-
-    # La correspondance Incarnam est déjà disponible dans le mapping SQLite.
+def test_music_is_trackable_in_git_and_location_fixture_remains_available():
+    ignored = (ROOT / '.gitignore').read_text(encoding='utf-8')
+    assert not any(line.startswith('Musiques/') for line in ignored.splitlines())
+    # Keep a real known location as an offline matching fixture.
     with sqlite3.connect(ROOT / 'Data' / 'dofus_data.sqlite') as database:
         assert database.execute('SELECT name FROM areas WHERE id = 45').fetchone() == ('Incarnam',)
 
@@ -120,10 +103,17 @@ def test_builder_keeps_music_directory_in_zip(tmp_path):
 
     with zipfile.ZipFile(output) as archive:
         names = set(archive.namelist())
-    assert 'Dofusic/Musiques/' in names
+    assert 'Dofusic/Musiques/Incarnam.opus' in names
     assert 'Dofusic/Dofusic.exe' in names
     assert 'Dofusic/Data/runtime.bin' in names
-    assert 'Dofusic/Musiques/Incarnam.opus' in names
+    assert {name for name in names if name.startswith('Dofusic/Musiques/') and not name.endswith('/')} == {
+        'Dofusic/Musiques/Incarnam.opus'
+    }
+    # Test the real builder/verifier contract, not two isolated assumptions.
+    verifier = _load_module(ROOT / '.github/scripts/verify_release.py', 'dofusic_verifier_clean')
+    checksum = tmp_path / 'Dofusic.zip.sha256'
+    assert verifier.finalize_release(output, checksum)['file_count'] >= 3
+    assert checksum.exists()
 
 
 def test_readme_has_no_signpath_or_obsolete_checksum_companion_instructions():
@@ -131,4 +121,4 @@ def test_readme_has_no_signpath_or_obsolete_checksum_companion_instructions():
     assert 'signpath' not in readme
     assert 'dofusic.zip.sha256' not in readme
     assert 'get-filehash' not in readme
-    assert 'contient directement les musiques utilisées par dofusic' in readme
+    assert 'le zip de la release github actions contient' in readme

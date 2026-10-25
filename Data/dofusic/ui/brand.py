@@ -5,10 +5,8 @@ from pathlib import Path
 
 from PIL import Image
 
-
 _ASSET_DIR = Path(__file__).resolve().parent / 'assets'
 BRAND_PNG_PATH = _ASSET_DIR / 'dofusic.png'
-BRAND_ICO_PATH = _ASSET_DIR / 'dofusic.ico'
 
 
 @lru_cache(maxsize=16)

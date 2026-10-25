@@ -1,4 +1,5 @@
 import types
+
 import numpy as np
 
 from dofusic.vision.engines import ZoneOCREngine
@@ -25,5 +26,3 @@ def test_live_zone_read_runs_exactly_one_small_inference_even_at_low_confidence(
     assert result.confidence == 0.61
     assert small.calls == 1
     assert 'small-live' in result.engine
-
-

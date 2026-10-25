@@ -2,8 +2,15 @@ from types import SimpleNamespace
 
 from dofusic.app import DofusicController
 from dofusic.models import (
-    Coordinates, DecisionResult, DecisionState, LocationEvidence, LocationKind,
-    LocationMatch, LocationRecord, MatchMode, ZoneOCRResult,
+    Coordinates,
+    DecisionResult,
+    DecisionState,
+    LocationEvidence,
+    LocationKind,
+    LocationMatch,
+    LocationRecord,
+    MatchMode,
+    ZoneOCRResult,
 )
 
 

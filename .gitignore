@@ -20,6 +20,11 @@ dist/
 UserData/
 Data/UserData/
 *.log
+*.log.*
+*.dmp
+*.mdmp
+*.dump
+*.trace
 
 # IDE / OS
 .vscode/
@@ -27,3 +32,16 @@ Data/UserData/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Generated CI reports and reproducible build outputs (never commit)
+Audit/
+Release/
+.coverage
+.coverage.*
+.audit-reference/
+.sbom-venv/
+Data/Models/
+*.part
+
+# Musiques/*.opus is intentionally versioned and distributed with GitHub releases.
+# Never ignore the soundtrack: additions must be tracked by Git for Actions.

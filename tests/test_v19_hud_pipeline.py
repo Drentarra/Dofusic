@@ -4,6 +4,8 @@ from types import SimpleNamespace
 
 import numpy as np
 
+from dofusic.vision.overlay_projection import project_position_overlay
+
 
 def _stroke(image, x1, x2, y1, y2, value=255):
     image[y1:y2, x1:x2] = value
@@ -35,7 +37,6 @@ def test_position_ocr_roi_remains_full_width_in_v20():
 
 
 def test_tracking_rect_maps_full_position_roi_and_controller_shortens_overlay_from_result():
-    from dofusic.app import DofusicController
     from dofusic.models import PositionOCRResult
     from dofusic.vision.layout import HUDInputs, HUDTrackingRects, HUDTransform, tracking_screen_rects
 
@@ -53,7 +54,7 @@ def test_tracking_rect_maps_full_position_roi_and_controller_shortens_overlay_fr
     assert rects.position[2] == 180
 
     result = PositionOCRResult('1, -36 - Niveau 140', 1, -36, 0.99, 1.0, 'test')
-    overlay = DofusicController._position_overlay_screen_rect(
+    overlay = project_position_overlay(
         full_rect=rects.position, result=result, roi_height=29, roi_width=180,
     )
     assert overlay is not None
@@ -71,7 +72,16 @@ def test_v20_removes_live_hud_signature_scheduling_helpers():
 
 def test_reconfirmed_same_location_does_not_reapply_local_music():
     from dofusic.app import DofusicController
-    from dofusic.models import DecisionResult, DecisionState, LocationEvidence, LocationKind, LocationMatch, LocationRecord, MatchMode, ZoneOCRResult
+    from dofusic.models import (
+        DecisionResult,
+        DecisionState,
+        LocationEvidence,
+        LocationKind,
+        LocationMatch,
+        LocationRecord,
+        MatchMode,
+        ZoneOCRResult,
+    )
 
     location = LocationRecord(95, "Astrub (Cité d'Astrub)", LocationKind.SUBAREA, 1, 'Astrub')
     match = LocationMatch(location, 100.0, 'name', location.name, exact=True, mode=MatchMode.EXACT)

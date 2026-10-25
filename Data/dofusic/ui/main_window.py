@@ -3,24 +3,24 @@ from __future__ import annotations
 import os
 import tkinter as tk
 from pathlib import Path
+from tkinter import font as tkfont
 
 from PIL import Image, ImageChops, ImageDraw, ImageFont, ImageTk
 
 from dofusic.app import DofusicController
+from dofusic.audio.session import MusicSession
 from dofusic.config import AppConfig, save_config
-from dofusic.online.session import MusicSession
 from dofusic.ui.brand import create_dofusic_logo
 from dofusic.ui.music_window import MusicWindow
+from dofusic.ui.overlay import TrackingOverlay
 from dofusic.ui.settings_window import SettingsWindow
 from dofusic.ui.themes import get_theme, theme_color_mapping
-from dofusic.ui.window_chrome import apply_window_chrome, schedule_window_chrome
 from dofusic.ui.volume import VolumeGesture, mute_visual_active
-from dofusic.ui.overlay import TrackingOverlay
+from dofusic.ui.window_chrome import apply_window_chrome, schedule_window_chrome
 from dofusic.version import __version__
 
 BG = '#06100e'
 BG_TOP = '#071411'
-CARD = '#0b1a17'
 CARD_ALT = '#0a1715'
 CARD_FIELD = '#0a1515'
 BORDER = '#214139'
@@ -29,7 +29,6 @@ TEXT = '#f4f8f6'
 MUTED = '#8fa69f'
 GREEN = '#43e39e'
 GREEN_SOFT = '#91f0c1'
-GREEN_DARK = '#0d3025'
 AMBER = '#f0c56c'
 RED = '#ff7c7c'
 TRACK = '#233b35'
@@ -164,6 +163,8 @@ def _rounded_rect(canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, *, radi
 
 def detection_badge(state) -> tuple[str, str]:
     """Return the single user-facing detection state shown in the header chip."""
+    if bool(getattr(state, 'fullscreen_required', False)):
+        return 'Plein écran requis', 'waiting'
     statuses = ' | '.join((
         str(getattr(state, 'worker_status', '') or ''),
         str(getattr(state, 'zone_worker_status', '') or ''),
@@ -172,7 +173,9 @@ def detection_badge(state) -> tuple[str, str]:
     if any(token in statuses for token in ('erreur', 'crash', 'fatal')):
         return 'Échec détection', 'red'
     if not bool(getattr(state, 'window_found', False)):
-        return 'En attente de Dofus', 'waiting'
+        if bool(getattr(state, 'game_detected', False)):
+            return 'Initialisation…', 'waiting'
+        return 'En attente de Dofus.exe', 'waiting'
     if 'ocr prêt' in str(getattr(state, 'worker_status', '') or '').casefold():
         return 'Dofus détecté', 'ok'
     return 'Initialisation…', 'waiting'
@@ -180,8 +183,10 @@ def detection_badge(state) -> tuple[str, str]:
 
 def combat_badge(state) -> tuple[str, str]:
     """Return the compact combat state shown beside the detected zone."""
+    if bool(getattr(state, 'fullscreen_required', False)):
+        return 'Plein écran requis', 'waiting'
     if not bool(getattr(state, 'window_found', False)):
-        return 'Combat : attente', 'waiting'
+        return 'En attente de Dofus.exe', 'waiting'
     if not bool(getattr(state, 'automatic_detection_unlocked', True)):
         return 'Combat : attente position', 'waiting'
     if bool(getattr(state, 'in_combat', False)):
@@ -203,6 +208,77 @@ class _CanvasBinding:
         if 'bg' in options:
             options.pop('bg')
         self.canvas.itemconfigure(self.item, **options)
+
+    configure = config
+
+
+def fit_text_to_width(text: str, max_width: int, measure) -> str:
+    """Fit a single status line in pixels; preserve it when room is available.
+
+    ``measure`` must use the same Tk font as the canvas item. The fallback
+    ellipsis is applied only when the entire text cannot be displayed.
+    """
+    value = str(text or '')
+    limit = max(0, int(max_width))
+    if not value or limit <= 0:
+        return ''
+    if measure(value) <= limit:
+        return value
+    ellipsis = '…'
+    if measure(ellipsis) > limit:
+        return ''
+    left, right = 0, len(value)
+    while left < right:
+        middle = (left + right + 1) // 2
+        if measure(value[:middle] + ellipsis) <= limit:
+            left = middle
+        else:
+            right = middle - 1
+    return value[:left].rstrip() + ellipsis if left else ellipsis
+
+
+class _AdaptiveStatusBinding(_CanvasBinding):
+    """Right-aligned, measured header badge; never paint outside the chip.
+
+    The pill grows leftward when its content needs more space. Only unusually
+    long messages are ellipsized, and the layout stays clear of header buttons.
+    """
+
+    def __init__(self, canvas: tk.Canvas, item: int, *, background_item: int,
+                 dot_item: int, measure) -> None:
+        super().__init__(canvas, item)
+        self.background_item = background_item
+        self.dot_item = dot_item
+        self.measure = measure
+        self._full_text: str | None = None
+        self._reflow(str(canvas.itemcget(item, 'text')))
+
+    def _reflow(self, value: str) -> None:
+        if value == self._full_text:
+            return
+        self._full_text = value
+        right = 538
+        left_limit = 124  # Header actions end at x=102; keep a 22 px gap.
+        left_padding_for_text = 40  # Pill margin + status dot + separation.
+        right_padding = 12
+        wanted_width = self.measure(value) + left_padding_for_text + right_padding
+        pill_width = min(right - left_limit, max(164, int(wanted_width)))
+        left = right - pill_width
+        text_x = left + left_padding_for_text
+        text_width = right - right_padding - text_x
+        fitted = fit_text_to_width(value, text_width, self.measure)
+        self.canvas.coords(
+            self.background_item, *_round_points(left, 22, right, 60, 12),
+        )
+        self.canvas.coords(self.dot_item, left + 17, 36, left + 27, 46)
+        self.canvas.coords(self.item, text_x, 41)
+        super().config(text=fitted)
+
+    def config(self, **kwargs) -> None:
+        if 'text' in kwargs:
+            self._reflow(str(kwargs.pop('text') or ''))
+        if kwargs:
+            super().config(**kwargs)
 
     configure = config
 
@@ -241,7 +317,7 @@ class _FadingTextBinding:
             bd=0,
             relief='flat',
         )
-        self.window_item = parent_canvas.create_window(x, y, anchor='nw', window=self.canvas)
+        parent_canvas.create_window(x, y, anchor='nw', window=self.canvas)
         self.image_item = self.canvas.create_image(0, self.height // 2, anchor='w')
         self._photo = None
         self._render()
@@ -303,6 +379,7 @@ class MainWindow:
         self.music_window: MusicWindow | None = None
         self.settings_window: SettingsWindow | None = None
         self.root = tk.Tk()
+        self.root.report_callback_exception = self._report_callback_exception
         self.root.title(f'Dofusic {__version__}')
         self.root.geometry(f'{self.WIDTH}x{self.HEIGHT}')
         self.root.configure(bg=self.palette.bg)
@@ -329,6 +406,15 @@ class MainWindow:
         self.overlay = TrackingOverlay(self.root)
         self._build()
         self._apply_theme()
+
+    def _report_callback_exception(self, _exc_type, _exc_value, _traceback) -> None:
+        """Display a failure state without publishing a traceback or local log."""
+        overlay = getattr(self, 'overlay', None)
+        if overlay is not None:
+            overlay.hide()
+        if hasattr(self, 'window_indicator'):
+            self._set_widget('window', self.window_indicator,
+                             text='Erreur Dofusic', fg=self.palette.red)
 
     def _build(self) -> None:
         self.canvas = tk.Canvas(
@@ -361,14 +447,25 @@ class MainWindow:
         c.tag_bind('settings-hit', '<Button-1>', lambda _event: self._open_settings())
 
         # Dofus detection chip.
-        _rounded_rect(c, 374, 22, 538, 60, radius=12, fill='#0a1b17', outline=BORDER_GREEN, width=1)
-        self.window_indicator_dot = _CanvasBinding(
-            c, c.create_oval(391, 36, 401, 46, fill=AMBER, outline=''),
+        header_chip = _rounded_rect(
+            c, 374, 22, 538, 60, radius=12, fill='#0a1b17',
+            outline=BORDER_GREEN, width=1,
         )
-        self.window_indicator = _CanvasBinding(
+        status_dot = c.create_oval(391, 36, 401, 46, fill=AMBER, outline='')
+        self.window_indicator_dot = _CanvasBinding(c, status_dot)
+        # Measure with the actual Tk font, including Windows DPI scaling.
+        self._header_status_font = tkfont.Font(
+            root=self.root, family='Segoe UI', size=10, weight='bold',
+        )
+        self.window_indicator = _AdaptiveStatusBinding(
             c,
-            c.create_text(414, 41, text='En attente de Dofus', anchor='w', fill=MUTED,
-                          font=('Segoe UI', 10, 'bold')),
+            c.create_text(
+                414, 41, text='En attente de Dofus.exe', anchor='w',
+                fill=MUTED, font=self._header_status_font,
+            ),
+            background_item=header_chip,
+            dot_item=status_dot,
+            measure=self._header_status_font.measure,
         )
 
         # Zone card -------------------------------------------------------------
@@ -382,7 +479,7 @@ class MainWindow:
                       font=('Segoe UI', 9, 'bold'))
         self.combat_indicator = _CanvasBinding(
             c,
-            c.create_text(520, 108, text='Combat : attente', anchor='ne', fill=MUTED,
+            c.create_text(520, 108, text='En attente de Dofus.exe', anchor='ne', fill=MUTED,
                           font=('Segoe UI', 8, 'bold')),
         )
         self.zone_value_label = _CanvasBinding(
@@ -422,7 +519,7 @@ class MainWindow:
             c, x=82, y=381, width=305, height=42, text='Aucune musique',
             fg=GREEN_SOFT, bg='#0a1b17', font_pt=18, fade_width=46,
         )
-        # Contextual escape hatch: visible only while an online track owns audio.
+        # Contextual return to automatic Dofus music during manual local playback.
         _rounded_rect(
             c, 402, 347, 530, 376, radius=9, fill=CARD_FIELD, outline=BORDER, width=1,
             tags=('local-return-hit',),
@@ -434,7 +531,7 @@ class MainWindow:
         c.tag_bind('local-return-hit', '<Button-1>', self._return_to_local_music)
         c.itemconfigure('local-return-hit', state='hidden')
         # 24-band real FFT spectrum: bass on the left, treble on the right.
-        # The animation has its own 30 FPS loop and never waits for OCR.
+        # The animation has its own 24 FPS loop and never waits for OCR.
         self._visualizer_baseline = 421
         self._visualizer_max_height = 44
         self._visualizer_bars = []
@@ -515,35 +612,12 @@ class MainWindow:
             pass
         self._apply_theme()
 
-        if not self.config.online_music_enabled:
-            if self.music_window is not None:
-                try:
-                    self.music_window.close()
-                except Exception:
-                    pass
-                self.music_window = None
-            if self.music_session is not None:
-                try:
-                    self.music_session.stop_online()
-                except Exception:
-                    pass
-                try:
-                    self.music_session.close()
-                except Exception:
-                    pass
-                self.music_session = None
-
         for secondary in (self.music_window, self.settings_window):
             if secondary is None:
                 continue
             try:
                 if secondary.window.winfo_exists():
                     secondary.apply_preferences()
-            except Exception:
-                pass
-        if self.music_session is not None:
-            try:
-                self.music_session.apply_config()
             except Exception:
                 pass
         try:
@@ -557,26 +631,15 @@ class MainWindow:
                 self.canvas.itemconfigure(bar, state='normal' if self.config.show_visualizer else 'hidden')
             except tk.TclError:
                 pass
-        # Provider/cache settings are picked up on the next Music panel session.
-        if self.music_session is not None and not self.controller.online_audio_active:
-            music_open = bool(self.music_window and self.music_window.window.winfo_exists())
-            if not music_open:
-                self.music_session.close()
-                self.music_session = None
 
     def _update_music_entry_state(self) -> None:
-        enabled = bool(self.config.online_music_enabled)
         try:
+            self.canvas.itemconfigure('music-icon', fill=self.palette.accent)
             self.canvas.itemconfigure(
-                'music-icon',
-                fill=self.palette.accent if enabled else self.palette.muted,
-            )
-            self.canvas.itemconfigure(
-                'music-button-bg',
-                fill=self.palette.header_chip if enabled else self.palette.card_alt,
+                'music-button-bg', fill=self.palette.header_chip,
                 outline=self.palette.border,
             )
-        except Exception:
+        except tk.TclError:
             pass
 
     def _open_settings(self) -> None:
@@ -593,38 +656,32 @@ class MainWindow:
         return self.music_session
 
     def _open_music(self) -> None:
-        if not self.config.online_music_enabled:
-            return
         if restore_secondary_window(self.music_window):
             return
         self.music_window = None
         session = self._get_music_session()
-        self.music_window = MusicWindow(
-            self.root, session, self.config, self.controller.repository,
-            on_library_saved=lambda _path: None,
-        )
+        self.music_window = MusicWindow(self.root, session, self.config)
 
     def _return_to_local_music(self, _event=None) -> None:
         if self.music_session is not None:
-            self.music_session.stop_online()
+            self.music_session.resume_dofus_music()
         else:
-            try:
-                self.controller.resume_local_audio()
-            except Exception:
-                pass
+            self.controller.resume_local_audio()
         if self.music_window is not None:
             try:
                 if self.music_window.window.winfo_exists():
                     self.music_window._refresh_playback_panel()
-            except Exception:
+            except tk.TclError:
                 pass
         self._update_local_return_button()
 
     def _update_local_return_button(self) -> None:
         try:
-            active = bool(getattr(self.controller, 'audio_override_active', self.controller.online_audio_active))
+            active = bool(self.controller.audio_override_active)
             state = 'normal' if active else 'hidden'
-            self.canvas.itemconfigure('local-return-hit', state=state)
+            if getattr(self, '_last_local_return_state', None) != state:
+                self.canvas.itemconfigure('local-return-hit', state=state)
+                self._last_local_return_state = state
         except Exception:
             pass
 
@@ -663,20 +720,17 @@ class MainWindow:
     def _visualizer_tick(self) -> None:
         if getattr(self, '_closed', False):
             return
+        enabled = self.config.show_visualizer
         try:
-            session = self.music_session
-            current = session.current if session is not None else None
-            if current is not None and current.source == 'online':
-                levels = session.online_visualizer_levels(VISUALIZER_BANDS)
-            else:
+            if enabled:
                 levels = self.controller.player.spectrum_levels(VISUALIZER_BANDS)
-            self._redraw_visualizer(levels)
+                self._redraw_visualizer(levels)
         except Exception:
             self._redraw_visualizer((0.0,) * VISUALIZER_BANDS)
         finally:
             if not getattr(self, '_closed', False):
                 try:
-                    self.root.after(VISUALIZER_INTERVAL_MS, self._visualizer_tick)
+                    self.root.after(VISUALIZER_INTERVAL_MS if enabled else 250, self._visualizer_tick)
                 except tk.TclError:
                     pass
 
@@ -744,12 +798,16 @@ class MainWindow:
         widget.config(**options)
 
     def _render_state(self, state) -> None:
-        zone = format_zone_value(state.ocr_text, state.place or state.location)
+        zone = (
+            'Passez Dofus en plein écran'
+            if bool(getattr(state, 'fullscreen_required', False))
+            else format_zone_value(state.ocr_text, state.place or state.location)
+        )
         self._set_widget('zone', self.zone_value_label, text=zone)
         self._set_widget('x', self.position_x_value, text=format_position_value(state.position_x))
         self._set_widget('y', self.position_y_value, text=format_position_value(state.position_y))
         self._set_widget('music', self.music_value_label, text=state.music or 'Aucune musique')
-        palette = getattr(self, 'palette', get_theme('emerald'))
+        palette = getattr(self, 'palette', None) or get_theme('emerald')
         combat_label, combat_role = combat_badge(state)
         combat_color = (
             palette.red if combat_role == 'combat'
@@ -785,10 +843,8 @@ class MainWindow:
             self._update_local_return_button()
             self._render_overlay(state)
         except Exception:
-            # Keep Tk alive but preserve the traceback for diagnostics.
-            self.controller.logger.exception('Erreur pendant le rafraîchissement de l’interface')
             self.overlay.hide()
-            palette = getattr(self, 'palette', get_theme('emerald'))
+            palette = getattr(self, 'palette', None) or get_theme('emerald')
             self._set_widget('window', self.window_indicator, text='Erreur Dofusic', fg=palette.text)
             self._set_widget('window-dot', self.window_indicator_dot, fg=palette.red)
         finally:
@@ -799,11 +855,34 @@ class MainWindow:
                     # A close event may destroy Tk between tick() and scheduling.
                     pass
 
+    def _start_runtime_after_first_paint(self) -> None:
+        # Initial capture/OCR/audio may be expensive on a cold Windows start.
+        # Let Tk render the dashboard before starting any game services.
+        if self._closed:
+            return
+        try:
+            self.controller.start()
+            self._update()
+            self._visualizer_tick()
+        except Exception:
+            # Keep the window visible with an actionable error instead of
+            # leaving a blank UI or swallowing the exception silently.
+            palette = getattr(self, 'palette', None) or get_theme('emerald')
+            self._set_widget('window', self.window_indicator, text='Erreur au démarrage', fg=palette.red)
+
     def run(self) -> None:
-        self.controller.start()
-        self._update()
-        self._visualizer_tick()
-        self.root.mainloop()
+        self.root.after(50, self._start_runtime_after_first_paint)
+        try:
+            self.root.mainloop()
+        finally:
+            self.close()
+            # The window has already been destroyed. Waiting briefly here cannot
+            # freeze or whiten Tk and gives OCR children time to exit cleanly.
+            supervisor = getattr(self.controller, '_ocr_supervisor', None)
+            worker_thread = getattr(supervisor, '_thread', None)
+            for thread in (getattr(self, '_capture_shutdown_thread', None), worker_thread):
+                if thread is not None and thread.is_alive():
+                    thread.join(timeout=3.0)
 
     def close(self) -> None:
         if getattr(self, '_closed', False):
@@ -820,9 +899,21 @@ class MainWindow:
                 self.music_session.close()
             except Exception:
                 pass
-        self.overlay.close()
-        self.controller.close()
         try:
-            self.root.destroy()
+            self.overlay.close()
         except Exception:
             pass
+        try:
+            if getattr(self.controller, '_ocr_supervisor', None) is not None:
+                self._capture_shutdown_thread = self.controller.close_async()
+            else:
+                self.controller.close()
+        except Exception:
+            pass
+        finally:
+            # WM_DELETE_WINDOW must always dispose Tk, even if native cleanup
+            # raises. Otherwise Windows leaves a non-responsive white window.
+            try:
+                self.root.destroy()
+            except Exception:
+                pass

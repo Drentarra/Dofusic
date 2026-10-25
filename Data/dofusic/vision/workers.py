@@ -4,7 +4,6 @@ import multiprocessing as mp
 import os
 import queue
 import time
-import traceback
 from dataclasses import dataclass
 from enum import Enum
 from typing import Literal
@@ -81,8 +80,8 @@ def _worker_main(channel: str, requests, events, cpu_threads: int) -> None:
         if callable(warmup):
             warmup()
         _put_latest(events, OCREvent(OCREventKind.READY, channel, message=engine.engine_name, pid=pid))
-    except BaseException:
-        _put_latest(events, OCREvent(OCREventKind.ERROR, channel, message=traceback.format_exc(), pid=pid))
+    except Exception as exc:
+        _put_latest(events, OCREvent(OCREventKind.ERROR, channel, message=type(exc).__name__, pid=pid))
         return
 
     while True:
@@ -105,10 +104,10 @@ def _worker_main(channel: str, requests, events, cpu_threads: int) -> None:
                 submitted_at=request.submitted_at,
                 finished_at=finished_at,
             ))
-        except BaseException:
+        except Exception as exc:
             finished_at = time.monotonic()
             _put_latest(events, OCREvent(
-                OCREventKind.ERROR, channel, request.request_id, None, traceback.format_exc(), pid,
+                OCREventKind.ERROR, channel, request.request_id, None, type(exc).__name__, pid,
                 captured_at=request.captured_at,
                 submitted_at=request.submitted_at,
                 finished_at=finished_at,
@@ -129,11 +128,13 @@ class OCRWorkerClient:
 
     @property
     def alive(self) -> bool:
-        return bool(self._process and self._process.is_alive())
+        process = self._process
+        return bool(process and process.is_alive())
 
     @property
     def exitcode(self) -> int | None:
-        return self._process.exitcode if self._process else None
+        process = self._process
+        return process.exitcode if process else None
 
     def start(self) -> None:
         if self.alive:
@@ -144,9 +145,9 @@ class OCRWorkerClient:
             self.close(timeout=0.0)
             if self._process is not None:
                 return
-        self._requests = self._ctx.Queue(maxsize=1)
-        self._events = self._ctx.Queue(maxsize=8)
         try:
+            self._requests = self._ctx.Queue(maxsize=1)
+            self._events = self._ctx.Queue(maxsize=8)
             process = self._ctx.Process(
                 target=_worker_main,
                 args=(self.channel, self._requests, self._events, self.cpu_threads),
@@ -168,33 +169,31 @@ class OCRWorkerClient:
 
     def submit(self, image: np.ndarray, captured_at: float | None = None) -> int | None:
         """Submit one OCR request without evicting any already queued request."""
-        if not self.alive or self._requests is None:
+        requests = self._requests
+        if not self.alive or requests is None:
             return None
         request_id = self._next_request_id
         submitted_at = time.monotonic()
         observed_at = submitted_at if captured_at is None else float(captured_at)
-        request = OCRRequest(request_id, np.ascontiguousarray(image).copy(), observed_at, submitted_at)
+        request = OCRRequest(request_id, np.array(image, copy=True, order='C'), observed_at, submitted_at)
         try:
-            self._requests.put_nowait(request)
-        except queue.Full:
+            requests.put_nowait(request)
+        except (queue.Full, ValueError, OSError):
             return None
         self._next_request_id += 1
-        return request_id
-
-    def submit_latest(self, image: np.ndarray, captured_at: float | None = None) -> int | None:
-        """Compatibility alias; V20 scheduling is single-flight, never latest-wins."""
-        return self.submit(image, captured_at=captured_at)
+        return request_id if requests is self._requests else None
 
     def poll(self) -> list[OCREvent]:
-        if self._events is None:
+        events = self._events
+        if events is None:
             return []
         items: list[OCREvent] = []
         while True:
             try:
-                items.append(self._events.get_nowait())
-            except queue.Empty:
+                items.append(events.get_nowait())
+            except (queue.Empty, ValueError, OSError, EOFError):
                 break
-        return items
+        return items if events is self._events else []
 
     def restart(self) -> None:
         self.close(timeout=0.5)

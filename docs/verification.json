@@ -1,0 +1,50 @@
+{
+  "date": "2026-10-25",
+  "platform": "Linux x86_64",
+  "python": "3.12.14",
+  "tests": {
+    "passed": 743,
+    "skipped": 1,
+    "failed": 0,
+    "duration_seconds": 21.14,
+    "skip_reason": "Tk display unavailable"
+  },
+  "baseline_tests": {
+    "passed": 670,
+    "skipped": 1,
+    "failed": 0
+  },
+  "ruff": "passed",
+  "source_files_checked": 164,
+  "source_lines_checked": 22740,
+  "invalid_python_files": {},
+  "duplicate_definitions": {},
+  "resolver_equivalence_scenarios": 4704,
+  "resolver_equivalence_mismatches": 0,
+  "assets": {
+    "json": 3,
+    "yaml": 3,
+    "images": 21,
+    "spec": 1,
+    "sqlite": 1
+  },
+  "coverage": {
+    "covered_lines": 4514,
+    "num_statements": 6630,
+    "percent_covered": 66.23376623376623,
+    "percent_covered_display": "66",
+    "missing_lines": 2116,
+    "excluded_lines": 8,
+    "percent_statements_covered": 68.08446455505279,
+    "percent_statements_covered_display": "68",
+    "num_branches": 1840,
+    "num_partial_branches": 318,
+    "covered_branches": 1096,
+    "missing_branches": 744,
+    "percent_branches_covered": 59.56521739130435,
+    "percent_branches_covered_display": "60"
+  },
+  "windows_binary_built": false,
+  "ocr_model_inference_tested": false,
+  "live_dofus_session_tested": false
+}

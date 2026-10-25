@@ -13,8 +13,10 @@ def main() -> int:
     try:
         import cv2
         import numpy as np
+
         from dofusic.vision.engines import PositionOCREngine, ZoneOCREngine
-        from dofusic.vision.layout import HUDGeometry, extract_hud_inputs
+        from dofusic.vision.layout import HUDGeometry
+        from tools.hud_reference import extract_reference_hud_inputs as extract_hud_inputs
 
         zone = ZoneOCREngine(cpu_threads=2)
         position = PositionOCREngine(cpu_threads=1)

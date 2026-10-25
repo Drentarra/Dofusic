@@ -22,8 +22,6 @@ class Coordinates:
     y: int
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class ZoneOCRResult:
     text: str

@@ -1,16 +1,39 @@
 from __future__ import annotations
 
 import json
+import math
 import os
-import shutil
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 
 
+def _bounded_float(value: object, minimum: float, maximum: float, default: float) -> float:
+    """Clamp finite configuration values; reject NaN/Infinity and invalid inputs."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return max(minimum, min(maximum, number))
+
+
+def _bounded_int(value: object, minimum: int, maximum: int, default: int) -> int:
+    """Prevent malformed numeric input and unbounded thresholds."""
+    try:
+        number = float(value)
+        if not math.isfinite(number):
+            return default
+        return max(minimum, min(maximum, int(number)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 @dataclass(slots=True)
 class AppConfig:
-    config_version: int = 26
+    config_version: int = 27
     process_name: str = 'dofus.exe'
 
     capture_fps: int = 10
@@ -39,50 +62,57 @@ class AppConfig:
     mute: bool = False
     fade_ms: int = 650
     fallback_stem: str = 'Musique'
-    debug: bool = False
     music_dir: str = ''
 
-    # Stable user-facing UI/online music preferences.
+    # Local music and appearance preferences.
     theme: str = 'emerald'
-    online_music_enabled: bool = True
-    online_suggestions: bool = True
-    online_suggest_delay_ms: int = 320
-    online_search_results: int = 8
-    online_cache_mb: int = 128
     show_visualizer: bool = True
     normalize_loudness: bool = True
     always_on_top: bool = False
 
     def sanitized(self) -> 'AppConfig':
+        defaults = AppConfig()
         values = asdict(self)
-        values.update({
-            'capture_fps': max(5, min(30, int(self.capture_fps))),
-            'ui_tick_ms': max(50, min(250, int(self.ui_tick_ms))),
-            'zone_ocr_min_interval_sec': max(0.25, float(self.zone_ocr_min_interval_sec)),
-            'position_ocr_min_interval_sec': max(0.20, float(self.position_ocr_min_interval_sec)),
-            'zone_ocr_idle_refresh_sec': max(0.75, float(self.zone_ocr_idle_refresh_sec)),
-            'position_ocr_idle_refresh_sec': max(0.50, float(self.position_ocr_idle_refresh_sec)),
-            'ocr_change_threshold': max(0.0, min(64.0, float(self.ocr_change_threshold))),
-            'position_context_max_age_sec': max(0.0, float(self.position_context_max_age_sec)),
-            'context_position_tolerance': max(0, min(4, int(self.context_position_tolerance))),
-            'pending_confirmation_interval_sec': max(0.15, float(self.pending_confirmation_interval_sec)),
-            'worker_restart_backoff_sec': max(0.5, float(self.worker_restart_backoff_sec)),
-            'capture_missing_grace_sec': max(0.0, float(self.capture_missing_grace_sec)),
-            'fallback_unknown_delay_sec': max(0.0, float(self.fallback_unknown_delay_sec)),
-            'cpu_threads': max(1, min(4, int(self.cpu_threads))),
-            'min_confidence': max(0.0, min(1.0, float(self.min_confidence))),
-            'min_fuzzy_score': max(0.0, min(100.0, float(self.min_fuzzy_score))),
-            'min_margin': max(0.0, min(100.0, float(self.min_margin))),
-            'exact_single_confidence': max(0.0, min(1.0, float(self.exact_single_confidence))),
-            'required_confirmations': max(2, int(self.required_confirmations)),
-            'text_stability_min': max(0.0, min(100.0, float(self.text_stability_min))),
-            'volume': max(0, min(100, int(self.volume))),
-            'fade_ms': max(0, min(5000, int(self.fade_ms))),
-            'theme': self.theme.strip().lower() if self.theme.strip().lower() in {'emerald', 'bonta', 'brakmar', 'arcane', 'ivory', 'graphite'} else 'emerald',
-            'online_suggest_delay_ms': max(150, min(1200, int(self.online_suggest_delay_ms))),
-            'online_search_results': max(3, min(20, int(self.online_search_results))),
-            'online_cache_mb': max(64, min(4096, int(self.online_cache_mb))),
-        })
+        # All timeouts, OCR thresholds and numerical preferences are finite.
+        # Upper bounds also prevent a corrupted config from disabling timers.
+        float_bounds = {
+            'zone_ocr_min_interval_sec': (0.25, 30.0),
+            'position_ocr_min_interval_sec': (0.20, 30.0),
+            'zone_ocr_idle_refresh_sec': (0.75, 60.0),
+            'position_ocr_idle_refresh_sec': (0.50, 60.0),
+            'ocr_change_threshold': (0.0, 64.0),
+            'position_context_max_age_sec': (0.0, 120.0),
+            'pending_confirmation_interval_sec': (0.15, 30.0),
+            'worker_restart_backoff_sec': (0.5, 120.0),
+            'capture_missing_grace_sec': (0.0, 30.0),
+            'fallback_unknown_delay_sec': (0.0, 60.0),
+            'min_confidence': (0.0, 1.0),
+            'min_fuzzy_score': (0.0, 100.0),
+            'min_margin': (0.0, 100.0),
+            'exact_single_confidence': (0.0, 1.0),
+            'text_stability_min': (0.0, 100.0),
+        }
+        int_bounds = {
+            'capture_fps': (5, 30), 'ui_tick_ms': (50, 250),
+            'context_position_tolerance': (0, 4), 'cpu_threads': (1, 4),
+            'required_confirmations': (2, 10), 'volume': (0, 100),
+            'fade_ms': (0, 5000),
+        }
+        for field, (minimum, maximum) in float_bounds.items():
+            values[field] = _bounded_float(values[field], minimum, maximum, getattr(defaults, field))
+        for field, (minimum, maximum) in int_bounds.items():
+            values[field] = _bounded_int(values[field], minimum, maximum, getattr(defaults, field))
+        for field in ('mute', 'show_visualizer', 'normalize_loudness', 'always_on_top'):
+            values[field] = _coerce_value(getattr(defaults, field), values[field])
+        values['config_version'] = defaults.config_version
+        themes = {'emerald', 'bonta', 'brakmar', 'arcane', 'ivory', 'graphite'}
+        theme = str(self.theme).strip().lower()
+        values['theme'] = theme if theme in themes else defaults.theme
+        process_name = str(self.process_name).strip()
+        if (not process_name or len(process_name) > 128 or
+                any(character in process_name for character in '/\\\x00\r\n')):
+            process_name = defaults.process_name
+        values['process_name'] = process_name
         return AppConfig(**values)
 
 
@@ -98,31 +128,54 @@ def app_dir() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _portable_storage_writable(folder: Path) -> bool:
+    """Teste les droits réels, sans laisser de fichier dans le dossier.
+
+    os.access() ne suffit pas sur Windows (ACL et dossiers protégés).
+    """
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryFile(dir=folder):
+            pass
+        return True
+    except OSError:
+        return False
+
+
 def user_data_dir() -> Path:
+    """Conserve les paramètres portables, avec repli Windows si nécessaire.
+
+    Les données utilisateur n'appartiennent jamais aux sources ou au ZIP de
+    distribution. DOFUSIC_USER_DATA reste prioritaire, sans repli implicite.
+    """
     override = os.environ.get('DOFUSIC_USER_DATA', '').strip()
     if override:
         return Path(override).expanduser().resolve()
-    return app_dir() / 'UserData'
+    portable = app_dir() / 'UserData'
+    if _portable_storage_writable(portable):
+        return portable
+    root = os.environ.get('LOCALAPPDATA') or os.environ.get('APPDATA')
+    if root:
+        fallback = Path(root).expanduser() / 'Dofusic'
+    else:
+        fallback = Path.home() / ('AppData/Local' if os.name == 'nt' else '.local/share') / 'Dofusic'
 
-
-def cleanup_legacy_user_data(base: Path | str | None = None) -> None:
-    """Remove app-owned browser state left by V24 and older builds.
-
-    Only the former ``UserData/webview2`` directory is removed; user settings,
-    logs, cache and unrelated files are preserved.
-    """
-    root = Path(base) if base is not None else user_data_dir()
-    legacy = root / 'webview2'
-    if legacy.is_dir():
-        shutil.rmtree(legacy, ignore_errors=True)
+    # Une installation déplacée vers un emplacement protégé ne doit pas
+    # perdre les préférences déjà enregistrées dans le dossier portable.
+    previous = portable / 'config.json'
+    destination = fallback / 'config.json'
+    try:
+        if previous.is_file() and not destination.exists():
+            save_config(load_config(previous), destination)
+    except OSError:
+        # Le lancement reste possible avec les valeurs par défaut ; l'UI
+        # indiquera une erreur explicite si l'enregistrement échoue ensuite.
+        pass
+    return fallback
 
 
 def config_path() -> Path:
     return user_data_dir() / 'config.json'
-
-
-def log_dir() -> Path:
-    return user_data_dir() / 'logs'
 
 
 def database_path() -> Path:
@@ -158,30 +211,32 @@ def _apply_dict(config: AppConfig, data: dict) -> AppConfig:
             continue
         try:
             values[key] = _coerce_value(getattr(defaults, key), value)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             continue
     return AppConfig(**values).sanitized()
 
 
-# Only stable user choices survive a schema migration. Runtime/OCR tuning is
-# version-owned so old alpha settings cannot silently degrade a newer release.
+# Preserve relevant user preferences across older configuration schemas;
+# unknown fields are ignored by _apply_dict (including removed options).
 _MIGRATION_KEEP = frozenset({
-    'process_name', 'volume', 'mute', 'fallback_stem', 'debug', 'music_dir',
-    'theme', 'online_music_enabled', 'online_suggestions', 'online_suggest_delay_ms',
-    'online_search_results', 'online_cache_mb',
-    'always_on_top',
+    'process_name', 'volume', 'mute', 'fallback_stem', 'music_dir',
+    'theme', 'always_on_top', 'show_visualizer', 'normalize_loudness', 'fade_ms',
 })
 
 
 def _migrate_current_config_data(data: dict) -> dict:
     try:
         version = int(data.get('config_version', 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         version = 0
-    current_version = AppConfig().config_version
-    if version >= current_version:
+    if version >= AppConfig().config_version:
         return data
-    return {key: value for key, value in data.items() if key in _MIGRATION_KEEP}
+    # Audio/visualizer defaults changed in v26; keep them only if they
+    # belonged to a v26+ user configuration, not old experimental profiles.
+    choices = _MIGRATION_KEEP if version >= 26 else _MIGRATION_KEEP - {
+        'show_visualizer', 'normalize_loudness', 'fade_ms',
+    }
+    return {key: value for key, value in data.items() if key in choices}
 
 
 def load_config(path: Path | str | None = None) -> AppConfig:
@@ -205,10 +260,23 @@ def load_config(path: Path | str | None = None) -> AppConfig:
 def save_config(config: AppConfig, path: Path | str | None = None) -> Path:
     target = Path(path) if path is not None else config_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    temp = target.with_suffix(target.suffix + '.tmp')
-    temp.write_text(
-        json.dumps(asdict(config.sanitized()), ensure_ascii=False, indent=2),
-        encoding='utf-8',
-    )
-    temp.replace(target)
+    # Fichier temporaire distinct pour chaque instance : remplacement atomique
+    # du JSON existant, jamais d'écriture partielle en cas d'erreur disque.
+    staged: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode='w', encoding='utf-8', dir=target.parent,
+            prefix=f'.{target.name}.', suffix='.tmp', delete=False,
+        ) as handle:
+            staged = Path(handle.name)
+            json.dump(asdict(config.sanitized()), handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        staged.replace(target)
+    finally:
+        if staged is not None:
+            try:
+                staged.unlink(missing_ok=True)
+            except OSError:
+                pass
     return target

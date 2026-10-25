@@ -4,7 +4,6 @@ import ctypes
 import os
 from ctypes import wintypes
 
-
 _TH32CS_SNAPPROCESS = 0x00000002
 _MAX_PATH = 260
 
@@ -50,7 +49,7 @@ def is_process_running(process_name: str) -> bool:
 
     snapshot = create_snapshot(_TH32CS_SNAPPROCESS, 0)
     invalid_handle = ctypes.c_void_p(-1).value
-    if snapshot in (None, 0, invalid_handle):
+    if snapshot in (None, 0, -1, invalid_handle):
         return False
 
     try:

@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import ctypes
-from ctypes import wintypes
 import os
-import tkinter as tk
 import time
+import tkinter as tk
+from ctypes import wintypes
 from dataclasses import dataclass
 
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageTk
-
 
 Rect = tuple[int, int, int, int]
 
@@ -28,8 +27,6 @@ def native_toplevel_hwnd(tk_hwnd: int, *, get_parent=None) -> int:
     except Exception:
         parent = 0
     return parent or hwnd
-
-
 
 
 def position_overlay_window(
@@ -72,6 +69,40 @@ def position_overlay_window(
         return bool(set_window_pos(hwnd, HWND_TOP, x, y, width, height, flags))
     except Exception:
         return False
+
+
+def native_overlay_bounds(
+    hwnd: int,
+    *,
+    get_window_rect=None,
+) -> Rect | None:
+    """Read the actual native window bounds, not Tk's last requested geometry.
+
+    Tk and Win32 can both process pending geometry changes; a successful
+    SetWindowPos does not mean Tk cannot move the surface again afterwards.
+    """
+    if not hwnd:
+        return None
+    if get_window_rect is None:
+        if os.name != 'nt':
+            return None
+        user32 = ctypes.windll.user32
+        get_window_rect = user32.GetWindowRect
+        get_window_rect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+        get_window_rect.restype = wintypes.BOOL
+    rect = wintypes.RECT()
+    try:
+        if not get_window_rect(int(hwnd), ctypes.byref(rect)):
+            return None
+        return (int(rect.left), int(rect.top),
+                int(rect.right - rect.left), int(rect.bottom - rect.top))
+    except Exception:
+        return None
+
+
+def native_overlay_position_valid(hwnd: int, expected: Rect, *, get_window_rect=None) -> bool:
+    actual = native_overlay_bounds(hwnd, get_window_rect=get_window_rect)
+    return actual is not None and all(abs(a - int(b)) <= 1 for a, b in zip(actual, expected))
 
 
 def set_overlay_topmost(
@@ -153,7 +184,6 @@ def rounded_corner_radius(width: int, height: int, requested: int = 6) -> int:
     if width <= 1 or height <= 1:
         return 0
     return min(requested, max(0, (width - 2) // 2), max(0, (height - 2) // 2))
-
 
 
 def build_merged_outline_mask(
@@ -317,7 +347,6 @@ class TrackingOverlay:
 
     CHROMA = '#010203'
     BORDER = '#ffffff'
-    FILL = ''
     PAD = 4
     RADIUS = 6
     ALPHA = 0.74
@@ -327,7 +356,6 @@ class TrackingOverlay:
         self.root = root
         self.enabled = os.name == 'nt'
         self.window = self._make_window() if self.enabled else None
-        self._last_foreground_role: str | None = None
 
     def _make_window(self) -> _OverlayWindow:
         top = tk.Toplevel(self.root)
@@ -482,27 +510,33 @@ class TrackingOverlay:
         if window is None:
             return
 
+        # Coordinates need a confirmed OCR reading for a *trimmed* outline.
+        # Their absence must not hide the independent zone/combat outlines.
+        if position_rect is None:
+            position_rect = (zone_rect[0], zone_rect[1], 0, 0)
         screen_rects = (combat_rect, zone_rect, position_rect)
-        geometry = overlay_bounds(*screen_rects, pad=self.PAD)
+        geometry = overlay_bounds(*(r for r in screen_rects if r[2] > 0 and r[3] > 0), pad=self.PAD)
         left, top, width, height = geometry
         local_rects = overlay_local_rects(screen_rects, geometry)
         old_geometry = window.geometry
         geometry_changed = old_geometry != geometry
         size_changed = old_geometry is None or old_geometry[2:] != geometry[2:]
         was_visible = window.visible
-
         if size_changed:
             window.canvas.configure(width=width, height=height)
-        window.geometry = geometry
+            # Tell Tk its native surface size; changing only the Canvas and
+            # calling Win32 SetWindowPos makes the Tk geometry manager disagree
+            # with Windows and may undo the move on a later mouse/GUI event.
+            # An origin at +0+0 avoids Tk's right/bottom-relative interpretation
+            # of negative screen coordinates. Win32 places the final rectangle.
+            window.top.geometry(f'{width}x{height}+0+0')
 
         if window.drawn_rects != local_rects or size_changed:
             window.canvas.delete('all')
             local_geometry = (0, 0, width, height)
             window.image_ref = self._draw_tracking_outline(
                 window.canvas,
-                local_rects[0],
-                local_rects[1],
-                local_rects[2],
+                local_rects[0], local_rects[1], local_rects[2],
                 geometry=local_geometry,
             )
             window.drawn_rects = local_rects
@@ -511,10 +545,24 @@ class TrackingOverlay:
             window.top.deiconify()
             window.visible = True
 
-        if geometry_changed or not was_visible:
-            hwnd = int(window.native_hwnd or native_toplevel_hwnd(int(window.top.winfo_id())))
-            window.native_hwnd = hwnd
-            position_overlay_window(hwnd, geometry)
+        hwnd = int(window.native_hwnd or native_toplevel_hwnd(int(window.top.winfo_id())))
+        window.native_hwnd = hwnd
+        # Even when our requested rectangle hasn't changed, Tk can reposition
+        # its wrapper asynchronously. Verify the OS window on *every* update.
+        misplaced = not native_overlay_position_valid(hwnd, geometry)
+        if geometry_changed or not was_visible or misplaced:
+            if not position_overlay_window(hwnd, geometry):
+                # Do not cache a position Windows refused: the next tick must
+                # retry, instead of leaving the white rectangles stranded.
+                window.geometry = None
+                self.hide()
+                return
+            if not native_overlay_position_valid(hwnd, geometry):
+                # Do not display an outline at wrong screen coordinates.
+                window.geometry = None
+                self.hide()
+                return
+        window.geometry = geometry
 
     def update(
         self,
@@ -529,7 +577,6 @@ class TrackingOverlay:
             or not hwnd
             or combat_rect is None
             or zone_rect is None
-            or position_rect is None
         ):
             self.hide()
             return
@@ -544,8 +591,9 @@ class TrackingOverlay:
             return
 
         self._place(combat_rect, zone_rect, position_rect, zone_key)
+        if not self.window or not self.window.visible:
+            return  # a failed SetWindowPos must not be re-shown by SWP_SHOWWINDOW
         self._set_topmost(role == 'dofus')
-        self._last_foreground_role = role
 
     def hide(self) -> None:
         window = self.window
@@ -557,7 +605,6 @@ class TrackingOverlay:
             pass
         finally:
             window.visible = False
-            self._last_foreground_role = None
             self._overlay_topmost = None
 
     def close(self) -> None:

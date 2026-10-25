@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from dofusic.vision.combat import CombatObservation, CombatStateTracker, analyze_combat_toolbar
-from dofusic.vision.layout import extract_hud_inputs
+from tools.hud_reference import extract_reference_hud_inputs as extract_hud_inputs
 
 
 def collapsed_toolbar(background=(65, 60, 55), foreground=(200, 200, 200)):
@@ -68,9 +68,9 @@ def test_missing_hud_is_unknown(image):
 
 def test_unknown_frames_preserve_confirmed_state_and_reset_transition():
     tracker = CombatStateTracker(required_confirmations=3)
-    combat = CombatObservation(True, 0.95, 0.95, 0, 0)
-    exploration = CombatObservation(False, 0.95, 0.95, 0, 0)
-    hidden = CombatObservation(None, 0, 0, 0, 0)
+    combat = CombatObservation(True, 0.95)
+    exploration = CombatObservation(False, 0.95)
+    hidden = CombatObservation(None, 0)
     assert tracker.update(combat) is None
     assert tracker.update(combat) is None
     assert tracker.update(combat) is True
@@ -84,7 +84,7 @@ def test_unknown_frames_preserve_confirmed_state_and_reset_transition():
 
 def test_low_confidence_cannot_change_stable_combat_state():
     tracker = CombatStateTracker(initial_state=True)
-    uncertain = CombatObservation(False, 0.59, 0.59, 0, 0)
+    uncertain = CombatObservation(False, 0.59)
     for _ in range(5):
         assert tracker.update(uncertain) is None
     assert tracker.in_combat is True
@@ -106,7 +106,7 @@ def test_missing_capture_breaks_pending_confirmation():
     controller._last_capture_sequence = 1
     controller.last_capture_seen_at = 10.0
     controller.capture_service = SimpleNamespace(latest=lambda sequence, now: CaptureSnapshot(2, None, now))
-    observation = CombatObservation(True, 0.95, 0.95, 0, 0)
+    observation = CombatObservation(True, 0.95)
     controller.combat_tracker.update(observation)
     controller.combat_tracker.update(observation)
     controller.tick(now=10.1)

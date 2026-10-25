@@ -1,9 +1,8 @@
 """Régressions de consommation mémoire et de fermeture FFmpeg."""
 from pathlib import Path
 
-import numpy as np
-
-from dofusic.audio.player import MusicPlayer, _LOUDNESS_CACHE_LIMIT
+from dofusic.audio.cache_policy import _LOUDNESS_CACHE_LIMIT
+from dofusic.audio.player import MusicPlayer
 
 
 def test_loudness_cache_is_bounded_and_keeps_most_recent_track():
@@ -78,9 +77,17 @@ def test_library_reuses_fuzzy_matches_and_invalidates_cache_on_rescan(tmp_path):
     library._rank_track_candidates = counting
     assert library.resolve(place, raw_text='Astrub') == first
     assert library.resolve(place, raw_text='Astrub') == first
+    # Une correspondance exacte non ambiguë est maintenant trouvée via
+    # l'index : aucun balayage fuzzy de la bibliothèque n'est nécessaire.
+    assert calculations == []
+    # Les autres recherches conservent le cache et sa réinitialisation.
+    library._best_track(('Astrubb',))
+    library._best_track(('Astrubb',))
     assert len(calculations) == 1
     library.scan()
     assert library.resolve(place, raw_text='Astrub') == first
+    assert len(calculations) == 1
+    library._best_track(('Astrubb',))
     assert len(calculations) == 2
 
 

@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import multiprocessing as mp
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -26,15 +26,13 @@ def _events_until(workers, expected, deadline):
 
 
 def main() -> int:
-    import cv2
-
-    from dofusic.vision.layout import HUDGeometry, extract_hud_inputs
+    from dofusic.vision.layout import HUDGeometry
     from dofusic.vision.workers import OCRWorkerClient
+    from tools.hud_reference import extract_reference_hud_inputs as extract_hud_inputs
+    from tools.image_io import read_image
 
     image_file = ROOT.parent / 'tests/fixtures/hud/astrub_6_-23_level15.png'
-    image = cv2.imread(str(image_file), cv2.IMREAD_COLOR)
-    if image is None:
-        raise FileNotFoundError(image_file)
+    image = read_image(image_file)
     hud = extract_hud_inputs(image, HUDGeometry())
 
     for cycle in range(2):

@@ -4,8 +4,9 @@ import os
 import subprocess
 import sys
 import tkinter as tk
+from dataclasses import fields, replace
 from pathlib import Path
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from dofusic.config import AppConfig, default_music_dir, save_config, user_data_dir
 from dofusic.ui.themes import get_theme, recolor_widget_tree, theme_choices
@@ -13,20 +14,23 @@ from dofusic.ui.window_chrome import apply_window_chrome, schedule_window_chrome
 
 
 def _open_path(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
     try:
+        path.mkdir(parents=True, exist_ok=True)
         if os.name == 'nt':
             os.startfile(str(path))  # type: ignore[attr-defined]
         elif sys.platform == 'darwin':
             subprocess.Popen(['open', str(path)])
         else:
             subprocess.Popen(['xdg-open', str(path)])
-    except Exception:
-        pass
+    except (OSError, subprocess.SubprocessError) as exc:
+        try:
+            messagebox.showerror('Dossier inaccessible', f'Impossible d’ouvrir ce dossier :\n{path}\n{exc}')
+        except tk.TclError:
+            pass
 
 
 class SettingsWindow:
-    DEFAULT_SIZE = (520, 520)
+    DEFAULT_SIZE = (520, 440)
 
     def __init__(self, parent, config: AppConfig, *, config_file=None, on_apply=None) -> None:
         self.parent = parent
@@ -63,10 +67,8 @@ class SettingsWindow:
         self.notebook = ttk.Notebook(self.window, style='Dofusic.TNotebook')
         self.notebook.pack(fill='both', expand=True, padx=18, pady=(0, 12))
         appearance = tk.Frame(self.notebook, bg=p.card)
-        online = tk.Frame(self.notebook, bg=p.card)
         advanced = tk.Frame(self.notebook, bg=p.card)
         self.notebook.add(appearance, text='Apparence')
-        self.notebook.add(online, text='Musique online')
         self.notebook.add(advanced, text='Avancé')
 
         self.theme_var = tk.StringVar(value=self.config.theme)
@@ -74,17 +76,10 @@ class SettingsWindow:
         self.normalize_var = tk.BooleanVar(value=self.config.normalize_loudness)
         self.fade_var = tk.IntVar(value=self.config.fade_ms)
         self.topmost_var = tk.BooleanVar(value=self.config.always_on_top)
-        self.online_var = tk.BooleanVar(value=self.config.online_music_enabled)
-        self.suggestions_var = tk.BooleanVar(value=self.config.online_suggestions)
-        self.results_var = tk.IntVar(value=self.config.online_search_results)
-        self.delay_var = tk.IntVar(value=self.config.online_suggest_delay_ms)
-        self.cache_var = tk.IntVar(value=self.config.online_cache_mb)
-        self.debug_var = tk.BooleanVar(value=self.config.debug)
 
         self._section_label(appearance, 'THÈME', p).pack(anchor='w', padx=18, pady=(18, 8))
         labels = {key: label for key, label in theme_choices()}
         combo = ttk.Combobox(appearance, state='readonly', values=[label for _key, label in theme_choices()], width=30, style='Dofusic.TCombobox')
-        self.theme_combo = combo
         combo.set(labels.get(self.config.theme, labels['emerald']))
         combo.pack(anchor='w', padx=18)
         def choose_theme(_event=None):
@@ -101,21 +96,6 @@ class SettingsWindow:
         topmost_check.configure(command=lambda: self._apply(live_theme=True))
         topmost_check.pack(anchor='w', padx=18, pady=2)
 
-        self._section_label(online, 'ONLINE', p).pack(anchor='w', padx=18, pady=(18, 8))
-        online_check = self._check(online, 'Activer la musique online', self.online_var, p)
-        online_check.configure(command=lambda: self._apply(live_theme=True))
-        online_check.pack(anchor='w', padx=18, pady=2)
-        self._check(online, 'Suggestions pendant la frappe', self.suggestions_var, p).pack(anchor='w', padx=18, pady=2)
-        self._field(online, 'Résultats affichés (3–20)', self.results_var, p, minimum=3, maximum=20, increment=1).pack(fill='x', padx=18, pady=(12, 4))
-        self._field(online, 'Délai suggestions en ms (150–1200)', self.delay_var, p, minimum=150, maximum=1200, increment=50).pack(fill='x', padx=18, pady=4)
-        self._field(online, 'Cache online en Mo (64–4096)', self.cache_var, p, minimum=64, maximum=4096, increment=64).pack(fill='x', padx=18, pady=4)
-
-        self._section_label(advanced, 'DIAGNOSTIC', p).pack(anchor='w', padx=18, pady=(8, 8))
-        tk.Label(
-            advanced, text='Le moteur online utilise yt-dlp sans navigateur intégré ni compte YouTube.',
-            bg=p.card, fg=p.muted, font=('Segoe UI', 9), wraplength=450, justify='left',
-        ).pack(anchor='w', padx=18, pady=(0, 10))
-        self._check(advanced, 'Mode debug au prochain démarrage', self.debug_var, p).pack(anchor='w', padx=18, pady=(2, 14))
         buttons = tk.Frame(advanced, bg=p.card)
         buttons.pack(fill='x', padx=18, pady=4)
         self._button(buttons, 'Ouvrir Musiques', lambda: _open_path(Path(self.config.music_dir) if self.config.music_dir else default_music_dir()), p).pack(side='left', padx=(0, 8))
@@ -125,6 +105,8 @@ class SettingsWindow:
         footer.pack(fill='x', padx=18, pady=(0, 16))
         self._button(footer, 'Appliquer', self._apply, p, accent=True).pack(side='right')
         self._button(footer, 'Fermer', self.close, p).pack(side='right', padx=(0, 8))
+        # Explicit escape hatch if saving fails (e.g. read-only user folder).
+        self._button(footer, 'Annuler', self.cancel, p).pack(side='right', padx=(0, 8))
 
     def _configure_ttk_style(self, p) -> None:
         style = self._style
@@ -181,35 +163,41 @@ class SettingsWindow:
                          fg=p.text, activebackground=p.accent, activeforeground=p.bg, relief='flat',
                          bd=0, padx=14, pady=7, font=('Segoe UI', 9, 'bold'), cursor='hand2')
 
-    def _apply(self, live_theme: bool = False) -> None:
+    def _apply(self, live_theme: bool = False) -> bool:
         try:
             selected_tab = self.notebook.select()
-        except Exception:
+        except tk.TclError:
             selected_tab = None
 
-        self.config.theme = self.theme_var.get()
-        self.config.show_visualizer = bool(self.visualizer_var.get())
-        self.config.normalize_loudness = bool(self.normalize_var.get())
-        self.config.fade_ms = int(self.fade_var.get())
-        self.config.always_on_top = bool(self.topmost_var.get())
-        self.config.online_music_enabled = bool(self.online_var.get())
-        self.config.online_suggestions = bool(self.suggestions_var.get())
-        self.config.online_search_results = int(self.results_var.get())
-        self.config.online_suggest_delay_ms = int(self.delay_var.get())
-        self.config.online_cache_mb = int(self.cache_var.get())
-        self.config.debug = bool(self.debug_var.get())
-        clean = self.config.sanitized()
-        for field in clean.__dataclass_fields__:
-            setattr(self.config, field, getattr(clean, field))
         try:
-            save_config(self.config, self.config_file)
-        except Exception:
-            pass
+            candidate = replace(
+                self.config,
+                theme=self.theme_var.get(),
+                show_visualizer=bool(self.visualizer_var.get()),
+                normalize_loudness=bool(self.normalize_var.get()),
+                fade_ms=int(self.fade_var.get()),
+                always_on_top=bool(self.topmost_var.get()),
+            ).sanitized()
+        except (ValueError, tk.TclError) as exc:
+            messagebox.showerror('Paramètres invalides', str(exc), parent=self.window)
+            return False
+        try:
+            save_config(candidate, self.config_file)
+        except OSError as exc:
+            messagebox.showerror(
+                'Sauvegarde impossible',
+                'Les paramètres n’ont pas été appliqués :\n' + str(exc),
+                parent=self.window,
+            )
+            return False
+        # Only publish settings after persistent storage succeeded.
+        for field in fields(AppConfig):
+            setattr(self.config, field.name, getattr(candidate, field.name))
         self.on_apply()
         if selected_tab:
             try:
                 self.notebook.select(selected_tab)
-            except Exception:
+            except tk.TclError:
                 pass
         if live_theme:
             def keep_settings_visible():
@@ -220,21 +208,26 @@ class SettingsWindow:
                         self.window.deiconify()
                     self.window.lift()
                     self.window.focus_force()
-                except Exception:
+                except tk.TclError:
                     pass
 
             try:
                 self.window.after_idle(keep_settings_visible)
-            except Exception:
+            except tk.TclError:
                 pass
-            return
+        return True
 
     def close(self) -> None:
-        try:
-            self._apply()
-        except Exception:
-            pass
+        if not self._apply():
+            return
         try:
             self.window.destroy()
-        except Exception:
+        except tk.TclError:
+            pass
+
+    def cancel(self) -> None:
+        """Discard unsaved UI changes and close, even on a read-only disk."""
+        try:
+            self.window.destroy()
+        except tk.TclError:
             pass

@@ -17,11 +17,12 @@ class OCRChannelScheduler:
     last_submit_at: float = 0.0
     last_finished_at: float = 0.0
     refresh_pending: bool = False
+    has_submitted: bool = False
 
     def should_submit(self, *, now: float, min_interval: float, force: bool = False) -> bool:
         now = float(now)
         interval = max(0.0, float(min_interval))
-        cadence_due = self.last_submit_at <= 0.0 or now - self.last_submit_at >= interval
+        cadence_due = not self.has_submitted or now - self.last_submit_at >= interval
         if self.active_request_id is not None:
             if force or cadence_due:
                 self.refresh_pending = True
@@ -35,6 +36,7 @@ class OCRChannelScheduler:
             raise RuntimeError('Une requête OCR est déjà active sur ce canal')
         self.active_request_id = int(request_id)
         self.last_submit_at = float(now)
+        self.has_submitted = True
         self.refresh_pending = False
 
     def completed(self, *, request_id: int, now: float) -> bool:
@@ -53,5 +55,6 @@ class OCRChannelScheduler:
     def reset(self, *, request_refresh: bool = True) -> None:
         self.active_request_id = None
         self.last_submit_at = 0.0
+        self.has_submitted = False
         self.last_finished_at = 0.0
         self.refresh_pending = bool(request_refresh)

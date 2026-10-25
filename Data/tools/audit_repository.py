@@ -1,15 +1,16 @@
-"""Inventorier tous les fichiers suivis par Git, sources comme médias.
+"""Inventaire SHA-256 des fichiers suivis Git ou présents dans un ZIP source.
 
-Ce contrôle protège la traçabilité des livrables sans prétendre tester
-l'exécution des ressources binaires. Exécuter depuis une copie Git complète.
+Ce contrôle vérifie la lisibilité et les empreintes des ressources, sans
+prétendre valider leur exécution. Les artefacts de build sont exclus.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
-from pathlib import Path
+import shutil
 import subprocess
+from pathlib import Path
 
 
 def category(path: str) -> str:
@@ -38,11 +39,34 @@ def fingerprint(path: Path) -> dict:
 
 def collect(root: Path) -> dict:
     root = root.resolve()
-    output = subprocess.run(
-        ['git', '-C', str(root), 'ls-files', '-z'],
-        check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    ).stdout
-    names = sorted({name.decode('utf-8') for name in output.split(b'\0') if name})
+    # Prefer the Git index when present: it remains the authoritative source
+    # for releases checked out by CI. Downloaded GitHub source ZIPs contain no
+    # .git index, so audit their complete on-disk source inventory instead.
+    names: list[str]
+    source = 'filesystem'
+    if (root / '.git').exists() and shutil.which('git') is not None:
+        try:
+            output = subprocess.run(
+                ['git', '-C', str(root), 'ls-files', '-z'],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            ).stdout
+            names = sorted({name.decode('utf-8') for name in output.split(b'\0') if name})
+            source = 'git'
+        except (OSError, subprocess.CalledProcessError):
+            names = []
+    else:
+        names = []
+    if source == 'filesystem':
+        excluded = {'.git', '.portable-build', 'Release', '__pycache__', '.pytest_cache',
+                    '.venv', '.mypy_cache', '.ruff_cache', '.tox', 'build', 'dist',
+                    'Audit', '.audit-reference', '.sbom-venv', 'Models'}
+        names = sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob('*')
+            if path.is_file() and not any(part in excluded for part in path.relative_to(root).parts)
+            and path.name != '.coverage'
+            and path.suffix not in {'.pyc', '.pyo'}
+        )
     records = {}
     failures = []
     for name in names:
@@ -52,6 +76,7 @@ def collect(root: Path) -> dict:
             continue
         records[name] = {'category': category(name), **fingerprint(path)}
     return {
+        'inventory_source': source,
         'tracked_files': len(names),
         'verified_files': len(records),
         'size_bytes': sum(item['bytes'] for item in records.values()),
@@ -64,7 +89,8 @@ def summary(result: dict) -> str:
     rows = [
         '# Inventaire intégral des fichiers suivis dans Dofusic',
         '',
-        f"- Fichiers Git : **{result['tracked_files']}**",
+        f"- Mode inventaire : **{result.get('inventory_source', 'git')}**",
+        f"- Fichiers contrôlés : **{result['tracked_files']}**",
         f"- Fichiers lisibles et empreintés : **{result['verified_files']}**",
         f"- Octets suivis : **{result['size_bytes']}**",
         f"- Anomalies d'accès : **{len(result['invalid_files'])}**",
@@ -96,7 +122,7 @@ def main() -> int:
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding='utf-8')
-    print(f"Fichiers Git contrôlés : {result['verified_files']}/{result['tracked_files']}")
+    print(f"Fichiers contrôlés ({result['inventory_source']}) : {result['verified_files']}/{result['tracked_files']}")
     return 1 if result['invalid_files'] else 0
 
 

@@ -25,11 +25,26 @@ def test_repository_manifest_has_all_file_types(tmp_path):
     from Data.tools.audit_repository import collect
     root = Path(__file__).resolve().parents[1]
     result = collect(root)
-    assert result['tracked_files'] >= 290
+    assert result['tracked_files'] >= 120
     assert result['invalid_files'] == []
     assert result['verified_files'] == result['tracked_files']
-    assert 'Musiques/' in ' '.join(result['files'])
+    if (root / 'Musiques' / 'Incarnam.opus').exists():
+        assert 'Musiques/Incarnam.opus' in result['files']
+    else:
+        assert not any(name.startswith('Musiques/') and name.endswith('.opus') for name in result['files'])
     assert 'Data/dofusic/version.py' in result['files']
     assert 'Data/dofus_data.sqlite' in result['files']
     assert 'README.md' in result['files']
     assert 'SHA-256' in summary(result)
+
+
+def test_archive_without_git_still_audits_real_files(tmp_path):
+    from Data.tools.audit_repository import collect
+    (tmp_path / 'Data').mkdir()
+    (tmp_path / 'Data' / 'app.py').write_text('print(1)')
+    (tmp_path / '.portable-build').mkdir()
+    (tmp_path / '.portable-build' / 'junk.txt').write_text('ignore')
+    result = collect(tmp_path)
+    assert result['inventory_source'] == 'filesystem'
+    assert list(result['files']) == ['Data/app.py']
+    assert result['verified_files'] == 1

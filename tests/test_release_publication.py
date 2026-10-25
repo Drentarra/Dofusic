@@ -2,13 +2,12 @@
 
 import io
 import json
-from pathlib import Path
 import subprocess
+from pathlib import Path
 from urllib.error import HTTPError
 
 import pytest
 import yaml
-
 
 WORKFLOW = Path(__file__).resolve().parents[1] / '.github/workflows/build-release.yml'
 
@@ -116,14 +115,18 @@ def test_invalid_manual_tag_is_rejected(monkeypatch, tag):
         exec(compile(step['run'], '<tag-validation>', 'exec'), {})
 
 
-def test_next_release_uses_reviewed_french_notes(monkeypatch):
-    code, calls = _publish(monkeypatch, status=404, tag='v1.0.12')
+def test_next_release_uses_reviewed_french_notes(monkeypatch, tmp_path):
+    notes = tmp_path / '.github' / 'RELEASE_NOTES_v1.0.15.md'
+    notes.parent.mkdir(parents=True)
+    notes.write_text('# Notes de version courante\n', encoding='utf-8')
+    monkeypatch.chdir(tmp_path)
+    code, calls = _publish(monkeypatch, status=404, tag='v1.0.15')
     exec(compile(code, '<publication-step>', 'exec'), {})
     assert len(calls) == 1
     assert '--notes-file' in calls[0]
-    assert '.github/RELEASE_NOTES_v1.0.12.md' in calls[0]
+    assert '.github/RELEASE_NOTES_v1.0.15.md' in calls[0]
     assert '--generate-notes' not in calls[0]
-    assert (WORKFLOW.parent.parent / 'RELEASE_NOTES_v1.0.12.md').is_file()
+    assert notes.is_file()
 
 
 def test_manual_publish_from_main_creates_tag_after_verifying_the_portable():
@@ -144,7 +147,7 @@ def test_manual_publish_from_main_creates_tag_after_verifying_the_portable():
 
     names = [step['name'] for step in final]
     tag_step = next(s for s in final if s['name'] == 'Create verified release tag from main')
-    assert names.index('Generate and validate installed build environment SBOM') < names.index(tag_step['name'])
+    assert names.index('Validate transferred build environment SBOM') < names.index(tag_step['name'])
     assert names.index('Upload verification artifact') < names.index(tag_step['name'])
     assert names.index(tag_step['name']) < names.index('Publish GitHub release')
     assert "inputs.create_tag_from_main" in tag_step['if']
@@ -152,42 +155,12 @@ def test_manual_publish_from_main_creates_tag_after_verifying_the_portable():
     assert '$env:VERIFIED_COMMIT' in tag_step['run']
 
 
-def test_one_time_v114_request_only_triggers_on_its_exact_file():
-    workflow = _workflow()
-    on_push = workflow['on']['push']
-    assert on_push['tags'] == ['v*']
-    assert on_push['branches'] == ['main']
-    assert on_push['paths'] == ['.github/release-requests/v1.0.14.txt']
-    assert (
-        WORKFLOW.parent.parent.joinpath('release-requests/v1.0.14.txt')
-        .read_text(encoding='utf-8').strip() == 'v1.0.14'
-    )
-
-    main_event = "github.event_name == 'push' && github.ref == 'refs/heads/main'"
-    for job in workflow['jobs'].values():
-        checkout = next(s for s in job['steps'] if s['name'] == 'Checkout sources')
-        assert f'({main_event}) && github.sha' in checkout['with']['ref']
-        assert "format('refs/tags/{0}', inputs.release_tag)" in checkout['with']['ref']
-    release_steps = workflow['jobs']['release-windows']['steps']
-    attest = next(s for s in release_steps if s['name'] == 'Attest final public ZIP')
-    publish = next(s for s in release_steps if s['name'] == 'Publish GitHub release')
-    tag = next(s for s in release_steps if s['name'] == 'Create verified release tag from main')
-    assert attest['if'] == publish['if']
-    assert main_event in attest['if'] and main_event in tag['if']
-    assert "'v1.0.14'" in tag['env']['RELEASE_TAG']
-    assert "'v1.0.14'" in publish['env']['RELEASE_TAG']
-    assert release_steps.index(tag) < release_steps.index(publish)
-    assert release_steps.index(next(s for s in release_steps if s['name'] == 'Upload verification artifact')) < release_steps.index(tag)
-    for job in workflow['jobs'].values():
-        verification = next(s for s in job['steps'] if s['name'] == 'Verify one-time release request')
-        assert verification['if'] == f'({main_event})'
-        assert '1.0.14' in verification['run']
-
-
-def test_one_time_request_does_not_change_manual_release_behavior():
-    workflow = _workflow()
-    steps = workflow['jobs']['build-windows']['steps']
-    manual = next(s for s in steps if s['name'] == 'Validate new release request')
-    assert "github.event_name == 'workflow_dispatch' && inputs.create_tag_from_main" in manual['if']
-    assert "refs/heads/main" in manual['run']
-    assert workflow['on']['workflow_dispatch']['inputs']['create_tag_from_main']['default'] == 'false'
+def test_sbom_describes_the_actual_build_environment_before_transfer():
+    workflow = _workflow()['jobs']
+    build_names = [step['name'] for step in workflow['build-windows']['steps']]
+    assert build_names.index('Build and test portable version') < build_names.index('Generate and validate installed build environment SBOM')
+    assert build_names.index('Generate and validate installed build environment SBOM') < build_names.index('Transfer build to verification job')
+    transfer = next(step for step in workflow['build-windows']['steps'] if step['name'] == 'Transfer build to verification job')
+    assert 'Release/Dofusic.sbom.json' in transfer['with']['path']
+    for step in workflow['release-windows']['steps']:
+        assert 'pip install' not in step.get('run', '')

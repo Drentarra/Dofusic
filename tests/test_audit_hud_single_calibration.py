@@ -33,7 +33,7 @@ def test_controller_reuses_transform_provided_by_capture_thread(monkeypatch):
     def unexpected_calibration(*_args, **_kwargs):
         raise AssertionError('Le frame possède déjà sa transformation HUD')
 
-    monkeypatch.setattr(layout, 'estimate_hud_transform', unexpected_calibration)
+    monkeypatch.setattr('tools.hud_reference.estimate_hud_transform', unexpected_calibration)
     state = controller.tick(now=100.0)
     assert state.window_found
     assert controller._last_capture_sequence == 1

@@ -1,61 +1,21 @@
-# Dofusic — portable Windows x64
+# Dofusic — architecture et construction
 
-Dofusic détecte automatiquement la zone et la position de **Dofus.exe** par OCR, puis joue les musiques locales associées. La musique online est optionnelle et utilise un moteur léger basé sur **yt-dlp** : aucun navigateur intégré, aucune session YouTube, aucun compte et aucun cookie ne sont nécessaires.
+Dofusic lit la fenêtre Dofus via Win32/MSS, extrait les régions HUD et exécute l'OCR dans des processus séparés avec RapidOCR et ONNX Runtime CPU. La base SQLite est ouverte en lecture seule. Les décisions de zone, de position et de combat pilotent un lecteur de musique exclusivement local, avec priorité des musiques de donjon.
 
-## Version portable
+## Modules
 
-La release finale contient `Dofusic.exe`, `Data/`, `Musiques/` et les fichiers nécessaires au runtime. Aucun Python système, pip, droit administrateur ou installation Dofusic n'est requis sur le PC utilisateur.
+- `dofusic/capture/` : découverte de la fenêtre, acquisition et synchronisation des images.
+- `dofusic/vision/` : géométrie du HUD, reconnaissance OCR, état des combats et ordonnanceur.
+- `dofusic/location/` : normalisation et résolution des lieux dans la base SQLite.
+- `dofusic/audio/` : lecture, décodage, analyse de spectre, fondus et caches bornés.
+- `dofusic/ui/` : interface graphique et surimpressions ; `dofusic/config.py` : paramètres locaux.
 
-Le mode local/OCR fonctionne hors ligne. Internet n'est utilisé que pour la recherche, les suggestions et la récupération de musique online.
+## Développement
 
-## Architecture
+Les dépendances Windows x64 sont verrouillées dans `requirements-lock.txt` ; RapidOCR est installé séparément et les modèles ONNX sont vérifiés par SHA-256. Depuis la racine, installer aussi `requirements-dev.txt`, puis lancer `python -m ruff check .` et `python -m pytest -q`. Les outils de maintenance et de benchmark résident dans `Data/tools/` et ne sont pas exécutés par le programme publié.
 
-- OCR zone : RapidOCR / ONNX Runtime avec **PP-OCRv6 Small** uniquement en temps réel.
-- OCR position : pipeline dédié et léger.
-- Capture : ciblée sur `Dofus.exe`, cadence limitée afin d'éviter les boucles inutiles.
-- Audio local et online : même lecteur Dofusic ; l'online est préparé en cache par yt-dlp/FFmpeg.
-- Visualiseur : FFT limitée en fréquence ; aucun décodage de spectre supplémentaire si le visualiseur est désactivé.
-- Recherche online : client yt-dlp léger + suggestions HTTP, sans WebView2/Chromium embarqué.
-- Données utilisateur : `Data/UserData/` reste local au dossier portable.
+La géométrie en fonctionnement provient de la résolution de la fenêtre Dofus. Les anciens algorithmes de calibrage sur captures sont isolés dans `tools/hud_reference.py` pour valider les images de référence ; ils ne sont pas importés par le runtime. `tools/benchmark_hotpaths.py` permet de comparer deux arbres de sources avec les mêmes scénarios, sans modèles OCR.
 
-## Build du ZIP public
+Construire sous Windows x64 avec `BUILD_PORTABLE.bat`. Le script prépare le modèle OCR, teste l'application, crée une release PyInstaller portable et contrôle son contenu. Les pistes `.opus` présentes dans `Musiques/` sont nécessaires à la publication : le constructeur refuse un dossier sans OPUS.
 
-Sous Windows x64, lancer `BUILD_PORTABLE.bat`. Le builder utilise son propre environnement dans `.portable-build/` et ne modifie pas le Python éventuellement installé sur le PC.
-
-Artefact attendu :
-
-`Release\Dofusic_V25_1_ECO_WINDOWS_X64.zip`
-
-Le builder exécute les tests, valide les dépendances, prépare le modèle OCR, construit l'application avec PyInstaller, lance l'auto-test du `.exe`, valide la release puis crée le ZIP.
-
-## Dossiers utilisateur
-
-- `Musiques/` : bibliothèque locale partageable/modifiable.
-- `Data/UserData/config.json` : préférences.
-- `Data/UserData/logs/` : journaux locaux.
-- cache online : borné et nettoyable depuis les préférences prévues par l'application.
-
-Lors d'une migration depuis une ancienne version, l'ancien profil `Data/UserData/webview2/` appartenant à Dofusic est supprimé automatiquement, car V25 n'utilise plus de navigateur intégré.
-
-## Conseils de distribution
-
-Pour Reddit ou un autre partage public, distribuer **uniquement le ZIP généré par le builder**, pas le dossier `.portable-build/`, ni les caches/tests de développement. L'utilisateur extrait le ZIP dans un dossier inscriptible puis lance `Dofusic.exe`.
-
-## Profil économe en ressources
-
-- Capture Dofus : 10 FPS.
-- Rafraîchissement UI : 80 ms.
-- OCR adaptatif : une empreinte 32x8 détecte les changements du HUD et évite de relancer ONNX sur une image identique ; rafraîchissement de sécurité toutes les 2 s (zone) / 1 s (position).
-- Visualiseur audio désactivé par défaut afin d'éviter un décodage FFmpeg supplémentaire.
-- Suggestions Internet : endpoint JSON léger `client=firefox&ds=yt`.
-- Miniatures YouTube : `mqdefault` et un seul téléchargement simultané.
-
-La première lecture d'un morceau Internet télécharge toujours l'audio dans le cache local. Les relectures utilisent ensuite le cache tant que le fichier est présent.
-## Audio et stockage
-
-- Les musiques téléchargées depuis l'onglet online sont normalisées en **Opus 64 kb/s** avant d'être mises en cache ou ajoutées dans `Musiques/`.
-- La bibliothèque locale reconnaît les principaux formats audio pris en charge par FFmpeg (MP3, Opus, OGG, FLAC, WAV, M4A, AAC, WMA, WebM/MKA, MP4 audio, AIFF, AC3, APE, WavPack, TTA, AMR, CAF...).
-- Si pygame ne sait pas décoder directement un fichier local, Dofusic utilise FFmpeg comme solution de repli temporaire sans modifier l'original.
-- `CONVERTIR_EN_OPUS_64K.bat` peut être posé dans un dossier de musiques : il crée un sous-dossier `Musiques` et convertit les fichiers en Opus 64 kb/s sans toucher aux originaux.
-- Le build portable embarque QuickJS-NG et FFmpeg une seule fois et vérifie les gros doublons runtime avant de publier le ZIP.
-
+La version compilée fonctionne **sans installer Python** et sans connexion Internet. Elle ne produit aucun fichier de journalisation. Les écritures concernent les préférences locales et, si nécessaire, les fichiers audio temporaires de conversion. Voir [PRIVACY.md](PRIVACY.md).

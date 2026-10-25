@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+import os
 import random
 import re
+from dataclasses import dataclass
+from pathlib import Path
 
 from dofusic.audio.dungeons import DungeonCatalog
 from dofusic.location.repository import DofusRepository
@@ -46,7 +47,8 @@ class MusicLibrary:
     ) -> None:
         self.repository = repository
         self.folder = Path(folder)
-        self.folder.mkdir(parents=True, exist_ok=True)
+        # La bibliothèque est une source de lecture : un dossier manquant ou
+        # protégé ne doit pas empêcher Dofusic de démarrer.
         self.fallback_stem = fallback_stem
         self.fuzzy_min = float(fuzzy_min)
         self.fuzzy_margin = float(fuzzy_margin)
@@ -58,6 +60,7 @@ class MusicLibrary:
         self.generic_combat_tracks: tuple[Path, ...] = tuple()
         self.ambiguous_track_keys: set[str] = set()
         self._named_tracks: dict[str, tuple[Path, ...]] = {}
+        self._exact_normal_tracks: dict[str, tuple[Path, ...]] = {}
         self._ambiguity_cache: dict[str, bool] = {}
         self._best_track_cache: dict[tuple[str, ...], Path | None] = {}
         # Generic music is a playback-session choice, not a geography cache.
@@ -70,17 +73,40 @@ class MusicLibrary:
         self._locations = repository.all_locations()
         self.scan()
 
+    def _audio_files(self):
+        """Parcourt les sous-dossiers sans suivre les liens symboliques.
+
+        La recherche n'effectue aucune écriture et ignore les entrées devenues
+        inaccessibles pendant le scan (dossier amovible, suppression, droits).
+        """
+        def on_error(error: OSError) -> None:
+            pass
+
+        for parent, directories, filenames in os.walk(self.folder, followlinks=False, onerror=on_error):
+            directory = Path(parent)
+            directories[:] = sorted(
+                (name for name in directories if not (directory / name).is_symlink()),
+                key=str.casefold,
+            )
+            for name in sorted(filenames, key=str.casefold):
+                path = directory / name
+                if path.suffix.lower() in AUDIO_EXTS and not path.is_symlink():
+                    try:
+                        if path.is_file():
+                            yield path
+                    except OSError:
+                        pass
+
     def scan(self) -> None:
         found: list[Path] = []
         all_found: list[Path] = []
         generic_normal: list[Path] = []
         generic_combat: list[Path] = []
         named: dict[str, list[Path]] = {}
+        normal_by_key: dict[str, list[Path]] = {}
         fallback_key = match_key(self.fallback_stem)
         self.fallback = None
-        for path in sorted(self.folder.iterdir(), key=lambda item: item.name.casefold()):
-            if not path.is_file() or path.suffix.lower() not in AUDIO_EXTS:
-                continue
+        for path in self._audio_files():
             all_found.append(path)
             named.setdefault(match_key(path.stem), []).append(path)
 
@@ -89,7 +115,7 @@ class MusicLibrary:
                 continue
             if _GENERIC_NORMAL_RE.fullmatch(path.stem):
                 generic_normal.append(path)
-                if match_key(path.stem) == fallback_key:
+                if match_key(path.stem) == fallback_key and self.fallback is None:
                     self.fallback = path
                 continue
 
@@ -99,12 +125,14 @@ class MusicLibrary:
             if stem_key == _COMBAT_PREFIX_KEY or stem_key.startswith(_COMBAT_PREFIX_KEY + ' '):
                 continue
             found.append(path)
+            normal_by_key.setdefault(match_key(path.stem), []).append(path)
 
         self.tracks = tuple(found)
         self.all_tracks = tuple(all_found)
         self.generic_tracks = tuple(generic_normal)
         self.generic_combat_tracks = tuple(generic_combat)
         self._named_tracks = {key: tuple(paths) for key, paths in named.items()}
+        self._exact_normal_tracks = {key: tuple(paths) for key, paths in normal_by_key.items()}
         # A library refresh is inventory maintenance only. Opening the local
         # music window must not silently reroll the automatic soundtrack.
         for mode, pool in ((False, self.generic_tracks), (True, self.generic_combat_tracks)):
@@ -161,11 +189,32 @@ class MusicLibrary:
         key = tuple(anchors)
         if key in self._best_track_cache:
             return self._best_track_cache[key]
-        selected = self._rank_track_candidates(key)
+        selected = self._fast_exact_track(key)
+        if selected is None:
+            selected = self._rank_track_candidates(key)
         self._best_track_cache[key] = selected
         if len(self._best_track_cache) > 128:
             self._best_track_cache.pop(next(iter(self._best_track_cache)))
         return selected
+
+    def _fast_exact_track(self, anchors: tuple[str, ...]) -> Path | None:
+        """Ne saute le fuzzy que si UN SEUL titre correspond exactement.
+
+        Une égalité de mots-clés ne suffit pas si les prépositions diffèrent :
+        ce cas doit encore passer par les règles d'ambiguïté habituelles.
+        """
+        exact: set[Path] = set()
+        for anchor in anchors:
+            if anchor:
+                key = match_key(anchor)
+                if key:
+                    exact.update(self._exact_normal_tracks.get(key, ()))
+                if len(exact) > 1:
+                    return None
+        if len(exact) != 1:
+            return None
+        candidate = next(iter(exact))
+        return candidate if self._strict_anchor_match(candidate, anchors) else None
 
     def _rank_track_candidates(self, anchors: tuple[str, ...]) -> Path | None:
         if not self.tracks:
@@ -181,7 +230,7 @@ class MusicLibrary:
         )
         scored: list[_TrackScore] = []
         for candidate in candidates:
-            if self._is_ambiguous_track(candidate.path) and not self._strict_anchor_match(candidate.path, anchors):
+            if not self._strict_anchor_match(candidate.path, anchors) and self._is_ambiguous_track(candidate.path):
                 continue
             scored.append(candidate)
             if len(scored) >= 2:

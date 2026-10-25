@@ -1,0 +1,5 @@
+"""Memory limits for optional audio analyses."""
+
+_LOUDNESS_CACHE_LIMIT = 128
+_SPECTRUM_CACHE_LIMIT_BYTES = 16 * 1024 * 1024
+_SPECTRUM_CACHE_LIMIT_ITEMS = 8

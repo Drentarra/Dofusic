@@ -93,7 +93,7 @@ def _tick_controller(monkeypatch):
         position_ocr_min_interval_sec=0.0,
     )
     combat_calls = []
-    controller._update_combat_from_toolbar = lambda image: combat_calls.append(image)
+    controller._update_combat_from_toolbar = lambda image, **_kwargs: combat_calls.append(image)
 
     hud = SimpleNamespace(
         combat=np.zeros((4, 4, 3), dtype=np.uint8),
@@ -178,11 +178,10 @@ def test_return_from_manual_audio_resumes_generic_music_before_startup_gate(tmp_
     controller = DofusicController.__new__(DofusicController)
     controller._automatic_detection_unlocked = False
     controller._audio_override_active = True
-    controller._audio_override_source = 'online'
     controller._desired_local_track = fallback
     controller.player = _Player()
     controller.music_library = SimpleNamespace(resolve=lambda *_a, **_k: fallback)
-    controller.state = SimpleNamespace(in_combat=False, music='Online', status='', display_theme='')
+    controller.state = SimpleNamespace(in_combat=False, music='Lecture manuelle', status='', display_theme='')
     controller.logger = _Logger()
 
     assert controller.resume_local_audio() is True
@@ -190,7 +189,6 @@ def test_return_from_manual_audio_resumes_generic_music_before_startup_gate(tmp_
     assert controller.player.play_calls == [(fallback, True, True)]
     assert controller.audio_override_active is False
     assert controller.state.music == 'Musique'
-
 
 
 def test_startup_gate_waits_for_dofus_then_plays_only_normal_generic_music(tmp_path):

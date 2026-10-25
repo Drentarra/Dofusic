@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import threading
 import time
-from types import SimpleNamespace
 
 from dofusic.capture.service import CaptureService
 from dofusic.location.resolver import LocationResolver
