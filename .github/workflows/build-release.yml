@@ -132,7 +132,7 @@ jobs:
           python .github/scripts/verify_release.py sbom Release/Dofusic.sbom.json Data/requirements-lock.txt
 
       - name: Transfer build to verification job
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: INTERNAL-Dofusic-release-candidate
           path: |
@@ -207,7 +207,7 @@ jobs:
           create-storage-record: false
 
       - name: Upload verification artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: Dofusic-Windows-x64-${{ (github.event_name == 'push' && github.ref == 'refs/heads/main') && 'v2.0.0' || inputs.release_tag || github.ref_name }}
           path: Release/Dofusic.zip
