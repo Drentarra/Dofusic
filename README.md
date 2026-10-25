@@ -1,34 +1,48 @@
 # Dofusic 2.0.0
 
-**[Télécharger Dofusic (Windows 64 bits)](https://github.com/Drentarra/Dofusic/releases/latest/download/Dofusic.zip)**
+**[Télécharger Dofusic — Windows 64 bits](https://github.com/Drentarra/Dofusic/releases/latest/download/Dofusic.zip)**
 
-Dofusic change automatiquement la musique de **Dofus** selon la zone et les combats. Il fonctionne en local et ne nécessite aucune installation.
+Dofusic adapte automatiquement la musique à la zone et aux combats de **Dofus**. Application portable, sans installation et sans compte.
 
-## Un pack musical déjà prêt
+**162 musiques OPUS incluses et préconfigurées**, avec de nombreux nouveaux morceaux pour les zones et donjons. Tout est prêt dans le ZIP.
 
-**162 musiques OPUS incluses et préconfigurées**, avec de nombreux nouveaux morceaux pour les zones et les donjons. Tout est fourni dans le ZIP : vous pouvez jouer directement, sans télécharger les musiques une par une.
+## Aperçu
 
-Vous pouvez aussi ajouter vos propres titres dans `Musiques/`.
+| Détection de la zone et musique en cours | Musiques locales et file d'attente |
+| :---: | :---: |
+| <img src="docs/screenshots/main-window.png" alt="Dofusic : zone, position et musique" width="420"> | <img src="docs/screenshots/local-music-window.png" alt="Dofusic : bibliothèque et file d'attente" width="560"> |
 
-## Fonctionnalités
+<details>
+<summary>Voir les paramètres et le thème clair</summary>
 
-- Musique adaptée automatiquement aux zones et aux combats.
-- Lecteur intégré avec recherche, file d'attente, répétition et lecture manuelle.
-- Prise en charge des formats OPUS, MP3, FLAC, WAV, OGG et d'autres formats.
-- Reconnaissance locale, sans télémétrie ni envoi de captures d'écran.
+<img src="docs/screenshots/settings-window.png" alt="Paramètres de Dofusic en thème clair" width="420">
+
+</details>
 
 ## Installation
 
-1. [Téléchargez `Dofusic.zip`](https://github.com/Drentarra/Dofusic/releases/latest/download/Dofusic.zip).
-2. Extrayez le ZIP et lancez `Dofusic.exe`.
+1. Téléchargez et extrayez `Dofusic.zip`.
+2. Lancez `Dofusic.exe`.
 3. Désactivez la musique de Dofus et ouvrez le jeu en plein écran.
 
-Dofusic détecte la fenêtre du jeu et lance la musique adaptée dès qu'une position est reconnue. **Le pack musical est déjà inclus.**
+Dofusic détecte le jeu, suit votre zone et lance la musique correspondante. **Les musiques sont déjà fournies.**
 
-## Code source
+## Ajouter ou remplacer des musiques
 
-Le projet est open source sous [licence MIT](LICENSE). Pour compiler sous Windows, utilisez `BUILD_PORTABLE.bat`.
+Ouvrez le dossier `Musiques/` :
 
-[Historique des versions](CHANGELOG.md) · [Vie privée](Data/PRIVACY.md) · [Signaler un problème](https://github.com/Drentarra/Dofusic/issues) · [Sécurité](SECURITY.md)
+- **Ajouter :** nommez votre fichier comme la zone ou le donjon souhaité. Exemple : `Amakna.mp3` ou `Antre de Crocabulia.opus`.
+- **Remplacer :** remplacez le fichier existant en conservant son nom. Si vous changez de format, retirez l'ancien fichier pour éviter les doublons.
+- **Musiques génériques :** `Musique.opus`, `Musique1.opus`, etc. Pour les combats : `Musique Combat.opus`.
 
-*Dofusic est un projet indépendant, sans affiliation avec Ankama.*
+**OPUS est recommandé** pour sa taille réduite. **MP3 fonctionne aussi**, ainsi que OGG, FLAC, WAV, M4A, AAC et d'autres formats audio.
+
+La fenêtre **Musiques locales** permet de rechercher des titres, de les écouter, de gérer la file d'attente ou de revenir à la lecture automatique.
+
+## Informations
+
+La reconnaissance des zones et combats se fait en local, sans envoi de captures ni télémétrie applicative.
+
+[Code source et historique](CHANGELOG.md) · [Vie privée](Data/PRIVACY.md) · [Signaler un problème](https://github.com/Drentarra/Dofusic/issues) · [Sécurité](SECURITY.md) · [Licence MIT](LICENSE)
+
+*Projet indépendant, sans affiliation avec Ankama.*
